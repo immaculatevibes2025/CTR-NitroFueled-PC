@@ -735,6 +735,16 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
                              : AmdGpu::DepthBuffer::StencilFormat::Invalid;
     key.depth_clamp_enable = !regs.depth_render_override.disable_viewport_clamp;
     key.depth_clip_enable = regs.clipper_control.ZclipEnable();
+    // bbport (#16/#18 experiment): BB_NO_DEPTH_CLIP=1 turns depth clipping off everywhere
+    // (depth is clamped instead), to test whether near/far clipping makes the sky seams.
+    if (static const bool no_clip = [] {
+            const char* env = std::getenv("BB_NO_DEPTH_CLIP");
+            return env && env[0] == '1';
+        }();
+        no_clip) {
+        key.depth_clip_enable = false;
+        key.depth_clamp_enable = true;
+    }
     key.clip_space = regs.clipper_control.clip_space;
     key.provoking_vtx_last = regs.polygon_control.provoking_vtx_last;
     key.prim_type = regs.primitive_type;

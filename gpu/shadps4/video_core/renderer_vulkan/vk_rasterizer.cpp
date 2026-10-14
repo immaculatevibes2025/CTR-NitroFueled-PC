@@ -33,6 +33,7 @@
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_gpu_profiler.h"
 #include <cmath>
+#include <bit>
 #include <chrono>
 #include <filesystem>
 #include <string>
@@ -1955,6 +1956,24 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     });
     if (dump_draw) {
         DumpDrawImage(cb_descs[0].first, crumb.hash[1], dump_seq - 1, "after");
+    }
+    if (FrameCapture::Active() && BbDrawDumpWanted(crumb.hash[0], crumb.hash[1])) {
+        // bbport (#16/#18): the state that decides clipping and vertex placement for the sky.
+        const auto& ra = regs.reg_array;
+        const u32 ctx = AmdGpu::Regs::ContextRegWordOffset;
+        const auto& vp = regs.viewports[0];
+        char note[512];
+        std::snprintf(note, sizeof(note),
+                      "\n  sky ps %08x vs %08x prim %u idx %u indexed %u clip %08x clamp_off %u "
+                      "vte %08x vp x %g+%g y %g+%g z %g+%g gb vc %g vd %g hc %g hd %g",
+                      u32(crumb.hash[1]), u32(crumb.hash[0]), u32(regs.primitive_type),
+                      num_indices, u32(is_indexed), std::bit_cast<u32>(regs.clipper_control),
+                      u32(regs.depth_render_override.disable_viewport_clamp),
+                      std::bit_cast<u32>(regs.viewport_control), vp.xscale, vp.xoffset,
+                      vp.yscale, vp.yoffset, vp.zscale, vp.zoffset,
+                      std::bit_cast<float>(ra[ctx + 0x2FA]), std::bit_cast<float>(ra[ctx + 0x2FB]),
+                      std::bit_cast<float>(ra[ctx + 0x2FC]), std::bit_cast<float>(ra[ctx + 0x2FD]));
+        FrameCapture::Note(note);
     }
     if (FrameCapture::Active()) {
         const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
