@@ -34,6 +34,9 @@
 #include "video_core/renderer_vulkan/vk_gpu_profiler.h"
 #include <cmath>
 #include <chrono>
+#include <filesystem>
+#include <string>
+#include <vk_mem_alloc.h>
 #include <cstdio>
 #include <mutex>
 #include <vector>
@@ -1472,6 +1475,163 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* pre
 // hashes (hex, as the frame analyzer prints them; vertex, pixel or compute); draws and dispatches
 // using one are skipped. The file is re-read about twice a second, so hashes can be added and
 // removed while playing. Lines starting with # are comments.
+// bbport: BB_DRAW_DUMP_TRIGGER=<file> (#16/#18). Creating the file dumps, for the next frame,
+// colour target 0 before and after every draw whose shader is in BB_DRAW_DUMP_SHADERS
+// (comma-separated hex, default the CTR sky dome and sky glow), and the small RGBA textures that
+// draw samples, as raw files in BB_DUMP_DIR (default out/drawdump):
+// d<seq>_<ps>_<what>_<w>x<h>_<vkformat>.raw
+static bool BbDrawDumpArmed() {
+    static const char* trigger = std::getenv("BB_DRAW_DUMP_TRIGGER");
+    if (!trigger) {
+        return false;
+    }
+    static u32 armed_frame = ~0u;
+    static u32 polls = 0;
+    const u32 frame = BbStats::frame_number.load(std::memory_order_relaxed);
+    if (armed_frame != ~0u) {
+        if (frame == armed_frame || frame == armed_frame + 1) {
+            return frame == armed_frame + 1;
+        }
+        armed_frame = ~0u;
+        std::printf("Draw dump: done\n");
+        std::fflush(stdout);
+    }
+    if (++polls % 64 == 0 && std::remove(trigger) == 0) {
+        armed_frame = frame;
+        std::printf("Draw dump: armed\n");
+        std::fflush(stdout);
+    }
+    return false;
+}
+
+static bool BbDrawDumpWanted(u64 vs, u64 ps) {
+    static const std::vector<u64> list = [] {
+        std::vector<u64> out;
+        const char* env = std::getenv("BB_DRAW_DUMP_SHADERS");
+        std::string text = env ? env : "9e65c83c,540368a2";
+        for (size_t pos = 0; pos < text.size();) {
+            const size_t comma = text.find(',', pos);
+            const std::string tok = text.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+            if (u64 v = std::strtoull(tok.c_str(), nullptr, 16)) {
+                out.push_back(v);
+            }
+            if (comma == std::string::npos) {
+                break;
+            }
+            pos = comma + 1;
+        }
+        return out;
+    }();
+    for (const u64 h : list) {
+        if (h == vs || h == ps) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static u32 BbDumpBytesPerPixel(vk::Format format) {
+    switch (format) {
+    case vk::Format::eR8G8B8A8Unorm:
+    case vk::Format::eR8G8B8A8Srgb:
+    case vk::Format::eB8G8R8A8Unorm:
+    case vk::Format::eB8G8R8A8Srgb:
+    case vk::Format::eA2B10G10R10UnormPack32:
+    case vk::Format::eB10G11R11UfloatPack32:
+    case vk::Format::eR32Sfloat:
+        return 4;
+    case vk::Format::eR16G16B16A16Sfloat:
+        return 8;
+    default:
+        return 0;
+    }
+}
+
+void Rasterizer::DumpDrawImage(VideoCore::ImageId id, u64 ps, u32 seq, const char* what) {
+    if (!id) {
+        return;
+    }
+    auto& image = texture_cache.GetImage(id);
+    const u32 bpp = BbDumpBytesPerPixel(image.info.pixel_format);
+    const u32 width = image.info.size.width;
+    const u32 height = image.info.size.height;
+    if (bpp == 0 || !image.backing || width == 0 || height == 0) {
+        return;
+    }
+    static const std::string dir = [] {
+        const char* env = std::getenv("BB_DUMP_DIR");
+        return std::string{env && env[0] ? env : "out/drawdump"};
+    }();
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    const VkDeviceSize size = VkDeviceSize(width) * height * bpp;
+    const VkBufferCreateInfo buffer_ci{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = size,
+        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+    };
+    const VmaAllocationCreateInfo alloc_ci{
+        .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT,
+        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+    };
+    VkBuffer buffer{};
+    VmaAllocation allocation{};
+    VmaAllocationInfo info{};
+    const VmaAllocator allocator = instance.GetAllocator();
+    if (vmaCreateBuffer(allocator, &buffer_ci, &alloc_ci, &buffer, &allocation, &info) !=
+        VK_SUCCESS) {
+        return;
+    }
+    const vk::Image vk_image = image.GetImage();
+    const vk::ImageLayout layout = image.backing->state.layout == vk::ImageLayout::eUndefined
+                                       ? vk::ImageLayout::eGeneral
+                                       : image.backing->state.layout;
+    const vk::ImageAspectFlags aspect = image.aspect_mask;
+    scheduler.EndRendering();
+    scheduler.Record([=](vk::CommandBuffer cmdbuf) {
+        const vk::ImageSubresourceRange range{aspect, 0, 1, 0, 1};
+        const vk::ImageMemoryBarrier2 to_src{
+            .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+            .srcAccessMask = vk::AccessFlagBits2::eMemoryWrite,
+            .dstStageMask = vk::PipelineStageFlagBits2::eTransfer,
+            .dstAccessMask = vk::AccessFlagBits2::eTransferRead,
+            .oldLayout = layout,
+            .newLayout = vk::ImageLayout::eTransferSrcOptimal,
+            .image = vk_image,
+            .subresourceRange = range,
+        };
+        cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &to_src});
+        const vk::BufferImageCopy region{
+            .imageSubresource = {aspect, 0, 0, 1},
+            .imageExtent = {width, height, 1},
+        };
+        cmdbuf.copyImageToBuffer(vk_image, vk::ImageLayout::eTransferSrcOptimal, buffer, region);
+        const vk::ImageMemoryBarrier2 back{
+            .srcStageMask = vk::PipelineStageFlagBits2::eTransfer,
+            .srcAccessMask = vk::AccessFlagBits2::eTransferRead,
+            .dstStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+            .dstAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite,
+            .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
+            .newLayout = layout,
+            .image = vk_image,
+            .subresourceRange = range,
+        };
+        cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &back});
+    });
+    char path[512];
+    std::snprintf(path, sizeof(path), "%s/d%03u_%08x_%s_%ux%u_%d.raw", dir.c_str(), seq, u32(ps),
+                  what, width, height, int(image.info.pixel_format));
+    scheduler.DeferPriorityOperation([allocator, buffer, allocation, info, size,
+                                      file = std::string{path}] {
+        vmaInvalidateAllocation(allocator, allocation, 0, VK_WHOLE_SIZE);
+        if (FILE* f = std::fopen(file.c_str(), "wb")) {
+            std::fwrite(info.pMappedData, 1, size, f);
+            std::fclose(f);
+        }
+        vmaDestroyBuffer(allocator, buffer, allocation);
+    });
+}
+
 struct BbShaderList {
     const char* env;
     const char* label;
@@ -1757,6 +1917,21 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         .program = {vs_info.ProgramBase(), ps_info ? ps_info->ProgramBase() : 0},
         .count = {num_indices, num_instances, 0},
     };
+    const bool dump_draw = BbDrawDumpArmed() && BbDrawDumpWanted(crumb.hash[0], crumb.hash[1]);
+    static u32 dump_seq = 0;
+    if (dump_draw) {
+        const u32 seq = dump_seq++;
+        DumpDrawImage(cb_descs[0].first, crumb.hash[1], seq, "before");
+        for (u32 i = 0; i < bound_images.size(); ++i) {
+            const auto& tex = texture_cache.GetImage(bound_images[i]);
+            if (tex.info.size.height <= 64 || tex.info.size.width <= 64) {
+                char what[16];
+                std::snprintf(what, sizeof(what), "tex%u", i);
+                DumpDrawImage(bound_images[i], crumb.hash[1], seq, what);
+            }
+        }
+        scheduler.BeginRendering(state);
+    }
     const bool skip_draw = BbSkipShaderDraw(crumb.hash[0], crumb.hash[1]);
     const bool no_depth_test = regs.depth_control.depth_enable &&
                                BbNoDepthTestDraw(crumb.hash[0], crumb.hash[1]);
@@ -1778,6 +1953,9 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             cmdbuf.setDepthCompareOp(depth_op);
         }
     });
+    if (dump_draw) {
+        DumpDrawImage(cb_descs[0].first, crumb.hash[1], dump_seq - 1, "after");
+    }
     if (FrameCapture::Active()) {
         const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
         FrameCapture::Draw(vs_info.pgm_hash, ps ? ps->pgm_hash : 0, num_indices, num_instances);

@@ -440,6 +440,7 @@ private:
     const bool host_markers_enabled;
     const bool guest_markers_enabled;
 
+    void DumpDrawImage(VideoCore::ImageId id, u64 ps, u32 seq, const char* what);
     using RenderTargetInfo = std::pair<VideoCore::ImageId, VideoCore::TextureCache::ImageDesc>;
     std::array<RenderTargetInfo, AmdGpu::NUM_COLOR_BUFFERS> cb_descs;
     std::pair<VideoCore::ImageId, VideoCore::TextureCache::ImageDesc> db_desc;
