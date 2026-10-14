@@ -1472,14 +1472,22 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* pre
 // hashes (hex, as the frame analyzer prints them; vertex, pixel or compute); draws and dispatches
 // using one are skipped. The file is re-read about twice a second, so hashes can be added and
 // removed while playing. Lines starting with # are comments.
-static bool BbSkipShaderDraw(u64 hash_a, u64 hash_b) {
-    static const char* path = std::getenv("BB_SKIP_SHADERS_FILE");
+struct BbShaderList {
+    const char* env;
+    const char* label;
+    std::mutex mutex;
+    std::vector<u64> hashes;
+    std::chrono::steady_clock::time_point next_read{};
+};
+
+static bool BbShaderListHas(BbShaderList& list, u64 hash_a, u64 hash_b) {
+    const char* path = std::getenv(list.env);
     if (!path) {
         return false;
     }
-    static std::mutex mutex;
-    static std::vector<u64> hashes;
-    static auto next_read = std::chrono::steady_clock::time_point{};
+    auto& mutex = list.mutex;
+    auto& hashes = list.hashes;
+    auto& next_read = list.next_read;
     std::scoped_lock lk{mutex};
     const auto now = std::chrono::steady_clock::now();
     if (now >= next_read) {
@@ -1504,7 +1512,7 @@ static bool BbSkipShaderDraw(u64 hash_a, u64 hash_b) {
         }
         if (fresh != hashes) {
             hashes = std::move(fresh);
-            std::printf("Skip shaders: %zu hash(es) from %s\n", hashes.size(), path);
+            std::printf("%s: %zu hash(es) from %s\n", list.label, hashes.size(), path);
             std::fflush(stdout);
         }
     }
@@ -1514,6 +1522,19 @@ static bool BbSkipShaderDraw(u64 hash_a, u64 hash_b) {
         }
     }
     return false;
+}
+
+static bool BbSkipShaderDraw(u64 hash_a, u64 hash_b) {
+    static BbShaderList list{.env = "BB_SKIP_SHADERS_FILE", .label = "Skip shaders"};
+    return BbShaderListHas(list, hash_a, hash_b);
+}
+
+// bbport: BB_NODEPTH_SHADERS_FILE, same format: draws using a listed shader pass the depth test
+// always (depth writes unchanged). Tests whether a layer fails its depth test against the one
+// under it (#16/#18: sky glow over the sky dome).
+static bool BbNoDepthTestDraw(u64 hash_a, u64 hash_b) {
+    static BbShaderList list{.env = "BB_NODEPTH_SHADERS_FILE", .label = "No depth test"};
+    return BbShaderListHas(list, hash_a, hash_b);
 }
 
 void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw* used_prepared,
@@ -1737,15 +1758,24 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         .count = {num_indices, num_instances, 0},
     };
     const bool skip_draw = BbSkipShaderDraw(crumb.hash[0], crumb.hash[1]);
+    const bool no_depth_test = regs.depth_control.depth_enable &&
+                               BbNoDepthTestDraw(crumb.hash[0], crumb.hash[1]);
+    const vk::CompareOp depth_op = LiverpoolToVK::CompareOp(regs.depth_control.depth_func);
     scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
         if (skip_draw) {
             return;
         }
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
+        if (no_depth_test) {
+            cmdbuf.setDepthCompareOp(vk::CompareOp::eAlways);
+        }
         if (is_indexed) {
             cmdbuf.drawIndexed(num_indices, num_instances, 0, s32(first_vertex), first_instance);
         } else {
             cmdbuf.draw(num_indices, num_instances, first_vertex, first_instance);
+        }
+        if (no_depth_test) {
+            cmdbuf.setDepthCompareOp(depth_op);
         }
     });
     if (FrameCapture::Active()) {
@@ -1753,11 +1783,13 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         FrameCapture::Draw(vs_info.pgm_hash, ps ? ps->pgm_hash : 0, num_indices, num_instances);
         if (const auto& bc = regs.blend_control[0]; bc.enable && regs.color_buffers[0]) {
             char note[128];
-            std::snprintf(note, sizeof(note), "\n  blend ps %08x idx %u: src %u dst %u func %u z %u%u",
+            std::snprintf(note, sizeof(note),
+                          "\n  blend ps %08x idx %u: src %u dst %u func %u z %u%u zfunc %u",
                           u32(ps ? ps->pgm_hash : 0), num_indices, u32(bc.color_src_factor),
                           u32(bc.color_dst_factor), u32(bc.color_func),
                           u32(regs.depth_control.depth_enable),
-                          u32(regs.depth_control.depth_write_enable));
+                          u32(regs.depth_control.depth_write_enable),
+                          u32(regs.depth_control.depth_func));
             FrameCapture::Note(note);
         }
     }
