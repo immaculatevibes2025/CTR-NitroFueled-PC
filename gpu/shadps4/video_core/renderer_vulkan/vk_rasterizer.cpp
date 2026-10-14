@@ -1733,10 +1733,13 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             sky_record = ++sky_seq;
             const auto& r = Regs();
             char tag[160];
-            std::snprintf(tag, sizeof(tag), "draw vs=%08x ps=%08x prim=%u num_indices=%u indexed=%u",
+            std::snprintf(tag, sizeof(tag),
+                          "draw vs=%08x ps=%08x prim=%u num_indices=%u indexed=%u clip_fix=%u "
+                          "clip_gs=%u",
                           u32(pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash),
                           u32(sky_ps ? sky_ps->pgm_hash : 0), u32(r.primitive_type), r.num_indices,
-                          u32(is_indexed));
+                          u32(is_indexed), u32(pipeline->GetGraphicsKey().clip_fix),
+                          u32(pipeline->HasClipGs()));
             BbSkyWrite(sky_record - 1, tag, 0, nullptr, 0);
             BbSkyWrite(sky_record - 1, "vs_user_data", 0, r.vs_program.user_data.data(),
                        r.vs_program.user_data.size() * 4);
@@ -3110,6 +3113,12 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                     ctr_fsr3->WantsCameraConstants() &&
                     memory->IsValidGpuMapping(ring->address, 0)) {
                     ctr_fsr3->OnCameraConstants(reinterpret_cast<const float*>(ring->address));
+                }
+                if (sky_record && stage.sw_stage == Shader::SwStage::Vertex &&
+                    memory->IsValidGpuMapping(ring->address, 0)) {
+                    BbSkyWrite(sky_record - 1, "ring slot=" + std::to_string(binding.buffer),
+                               ring->address, reinterpret_cast<const void*>(ring->address),
+                               memory->ClampRangeSize(ring->address, ring->size));
                 }
                 push_data.AddOffset(binding.buffer, 0);
             }

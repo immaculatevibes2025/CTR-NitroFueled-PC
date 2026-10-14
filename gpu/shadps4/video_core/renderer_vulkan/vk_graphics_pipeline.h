@@ -100,6 +100,9 @@ public:
         return fetch_shader;
     }
 
+    bool HasClipGs() const {
+        return has_clip_gs;
+    }
     const GraphicsPipelineKey& GetGraphicsKey() const {
         return key;
     }
@@ -119,6 +122,7 @@ private:
 
 private:
     GraphicsPipelineKey key;
+    bool has_clip_gs = false; ///< bbport (#16/#18)
     std::optional<const Shader::Gcn::FetchShaderData> fetch_shader{};
 };
 

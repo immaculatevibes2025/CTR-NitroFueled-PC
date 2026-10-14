@@ -199,6 +199,7 @@ GraphicsPipeline::GraphicsPipeline(
                 key.depth_clip_enable != 0);
         }
         if (!sdata.clip_gs.empty()) {
+            has_clip_gs = true;
             shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
                 .stage = vk::ShaderStageFlagBits::eGeometry,
                 .module = CompileSPV(sdata.clip_gs, instance.GetDevice()),
