@@ -33,6 +33,10 @@
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_gpu_profiler.h"
 #include <cmath>
+#include <chrono>
+#include <cstdio>
+#include <mutex>
+#include <vector>
 #include "bbport_threads.h"
 #include "bbport_settings.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
@@ -1464,6 +1468,54 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* pre
     DrawRecord(pipeline, used_prepared, is_indexed, index_offset);
 }
 
+// bbport: debugging switch for issues #16/#18. BB_SKIP_SHADERS_FILE names a text file of shader
+// hashes (hex, as the frame analyzer prints them; vertex, pixel or compute); draws and dispatches
+// using one are skipped. The file is re-read about twice a second, so hashes can be added and
+// removed while playing. Lines starting with # are comments.
+static bool BbSkipShaderDraw(u64 hash_a, u64 hash_b) {
+    static const char* path = std::getenv("BB_SKIP_SHADERS_FILE");
+    if (!path) {
+        return false;
+    }
+    static std::mutex mutex;
+    static std::vector<u64> hashes;
+    static auto next_read = std::chrono::steady_clock::time_point{};
+    std::scoped_lock lk{mutex};
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= next_read) {
+        next_read = now + std::chrono::milliseconds(500);
+        std::vector<u64> fresh;
+        if (FILE* f = std::fopen(path, "r")) {
+            char token[64];
+            while (std::fscanf(f, "%63s", token) == 1) {
+                if (token[0] == '#') {
+                    int c;
+                    while ((c = std::fgetc(f)) != EOF && c != '\n') {
+                    }
+                    continue;
+                }
+                char* end = nullptr;
+                const u64 value = std::strtoull(token, &end, 16);
+                if (end != token && value != 0) {
+                    fresh.push_back(value);
+                }
+            }
+            std::fclose(f);
+        }
+        if (fresh != hashes) {
+            hashes = std::move(fresh);
+            std::printf("Skip shaders: %zu hash(es) from %s\n", hashes.size(), path);
+            std::fflush(stdout);
+        }
+    }
+    for (const u64 h : hashes) {
+        if (h == hash_a || (hash_b != 0 && h == hash_b)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw* used_prepared,
                             bool is_indexed, u32 index_offset) {
     BB_SECTION(DrawRecord);
@@ -1684,7 +1736,11 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         .program = {vs_info.ProgramBase(), ps_info ? ps_info->ProgramBase() : 0},
         .count = {num_indices, num_instances, 0},
     };
+    const bool skip_draw = BbSkipShaderDraw(crumb.hash[0], crumb.hash[1]);
     scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
+        if (skip_draw) {
+            return;
+        }
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
         if (is_indexed) {
             cmdbuf.drawIndexed(num_indices, num_instances, 0, s32(first_vertex), first_instance);
@@ -1825,7 +1881,11 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
         .address = indirect.args,
         .count = {max_count, stride, 0},
     };
+    const bool skip_draw = BbSkipShaderDraw(crumb.hash[0], crumb.hash[1]);
     scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
+        if (skip_draw) {
+            return;
+        }
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
         if (is_indexed) {
             if (counts) {
@@ -1923,7 +1983,11 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
         .program = {cs.ProgramBase(), 0},
         .count = {dim_x, dim_y, dim_z},
     };
+    const bool skip_draw = BbSkipShaderDraw(crumb.hash[0], crumb.hash[1]);
     scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
+        if (skip_draw) {
+            return;
+        }
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, handle);
         cmdbuf.dispatch(dim_x, dim_y, dim_z);
     });
@@ -1987,7 +2051,11 @@ void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr a
         .count = {buffer_cache.IsInPlace(address, size) ? 1u : 0u, 0, 0},
         .args_slot = args_slot,
     };
+    const bool skip_draw = BbSkipShaderDraw(crumb.hash[0], crumb.hash[1]);
     scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
+        if (skip_draw) {
+            return;
+        }
         Breadcrumbs::CopyArgs(cmdbuf, args, args_offset, args_slot);
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, handle);
         cmdbuf.dispatchIndirect(args, args_offset);
