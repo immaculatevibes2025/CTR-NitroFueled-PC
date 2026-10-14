@@ -1633,6 +1633,28 @@ void Rasterizer::DumpDrawImage(VideoCore::ImageId id, u64 ps, u32 seq, const cha
     });
 }
 
+// bbport (#16/#18): raw inputs of the sky draws while a frame is captured, for replaying their
+// vertex shader offline: <BB_CAPTURE_DIR or out>/sky_<seq>.bin, records of
+// "<tag> <address> <size>\n" followed by the bytes and "\n".
+static void BbSkyWrite(u32 seq, const std::string& tag, u64 address, const void* data, u64 size) {
+    static const std::string dir = [] {
+        const char* env = std::getenv("BB_CAPTURE_DIR");
+        return std::string{env && env[0] ? env : "out"};
+    }();
+    size = std::min<u64>(size, 4u << 20);
+    char path[512];
+    std::snprintf(path, sizeof(path), "%s/sky_%03u.bin", dir.c_str(), seq);
+    if (FILE* f = std::fopen(path, "ab")) {
+        std::fprintf(f, "%s %llu %llu\n", tag.c_str(), (unsigned long long)address,
+                     (unsigned long long)size);
+        if (data && size) {
+            std::fwrite(data, 1, size, f);
+        }
+        std::fputc('\n', f);
+        std::fclose(f);
+    }
+}
+
 struct BbShaderList {
     const char* env;
     const char* label;
@@ -1702,6 +1724,51 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
                             bool is_indexed, u32 index_offset) {
     BB_SECTION(DrawRecord);
     buffer_cache.NewPacket();
+    sky_record = 0;
+    if (FrameCapture::Active()) {
+        const auto* sky_ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+        if (BbDrawDumpWanted(pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash,
+                             sky_ps ? sky_ps->pgm_hash : 0)) {
+            static u32 sky_seq = 0;
+            sky_record = ++sky_seq;
+            const auto& r = Regs();
+            char tag[160];
+            std::snprintf(tag, sizeof(tag), "draw vs=%08x ps=%08x prim=%u num_indices=%u indexed=%u",
+                          u32(pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash),
+                          u32(sky_ps ? sky_ps->pgm_hash : 0), u32(r.primitive_type), r.num_indices,
+                          u32(is_indexed));
+            BbSkyWrite(sky_record - 1, tag, 0, nullptr, 0);
+            BbSkyWrite(sky_record - 1, "vs_user_data", 0, r.vs_program.user_data.data(),
+                       r.vs_program.user_data.size() * 4);
+            if (is_indexed) {
+                const u32 index_size = r.index_buffer_type.index_type == AmdGpu::IndexType::Index16 ? 2 : 4;
+                const VAddr ia = r.index_base_address.Address<VAddr>() + u64(index_offset) * index_size;
+                if (memory->IsValidGpuMapping(ia, 0)) {
+                    std::snprintf(tag, sizeof(tag), "ib index_size=%u", index_size);
+                    BbSkyWrite(sky_record - 1, tag, ia, reinterpret_cast<const void*>(ia),
+                               memory->ClampRangeSize(ia, u64(r.num_indices) * index_size));
+                }
+            }
+            if (const auto& fetch = pipeline->GetFetchShader()) {
+                const auto& vs = pipeline->GetStage(Shader::SwStage::Vertex);
+                for (const auto& attr : fetch->attributes) {
+                    const auto vb = attr.GetSharp(vs);
+                    std::snprintf(tag, sizeof(tag),
+                                  "attr semantic=%u vgpr=%u elems=%u inst=%u stride=%u dfmt=%u nfmt=%u",
+                                  attr.semantic, attr.dest_vgpr, attr.num_elements,
+                                  attr.instance_data, u32(vb.GetStride()), u32(vb.GetDataFmt()),
+                                  u32(vb.GetNumberFmt()));
+                    if (vb.base_address && memory->IsValidGpuMapping(vb.base_address, 0)) {
+                        BbSkyWrite(sky_record - 1, tag, vb.base_address,
+                                   reinterpret_cast<const void*>(vb.base_address),
+                                   memory->ClampRangeSize(vb.base_address, vb.GetSize()));
+                    } else {
+                        BbSkyWrite(sky_record - 1, tag, vb.base_address, nullptr, 0);
+                    }
+                }
+            }
+        }
+    }
     if (DrawPipe::OnStageB()) {
         FrameCapture::Poll();
         scheduler.PopPendingOperations();
@@ -3059,6 +3126,10 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                     FrameCapture::Buffer(stage.pgm_hash, binding.buffer, 0,
                                          stage.FlatUserData().data(), ubo_size);
                 }
+                if (sky_record && stage.sw_stage == Shader::SwStage::Vertex) {
+                    BbSkyWrite(sky_record - 1, "flatbuf slot=" + std::to_string(binding.buffer), 0,
+                               stage.FlatUserData().data(), ubo_size);
+                }
                 const u64 offset =
                     vk_buffer.Copy(stage.FlatUserData().data(), ubo_size, alignment);
                 buffer_infos.emplace_back(vk_buffer.Handle(), offset, ubo_size);
@@ -3121,6 +3192,13 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                               (unsigned long long)vsharp.base_address, u32(vsharp.GetSize()),
                               u32(vsharp.GetStride()), f[0], f[1], f[2], f[3]);
                 FrameCapture::Note(note);
+            }
+            if (sky_record && stage.sw_stage == Shader::SwStage::Vertex &&
+                vsharp.base_address != 0 && vsharp.GetSize() != 0 &&
+                memory->IsValidGpuMapping(vsharp.base_address, 0)) {
+                BbSkyWrite(sky_record - 1, "cb slot=" + std::to_string(binding.buffer),
+                           vsharp.base_address, reinterpret_cast<const void*>(vsharp.base_address),
+                           memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize()));
             }
             if (FrameCapture::Active() && vsharp.base_address != 0 && vsharp.GetSize() != 0 &&
                 memory->IsValidGpuMapping(vsharp.base_address, 0)) {

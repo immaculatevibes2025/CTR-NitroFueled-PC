@@ -433,6 +433,7 @@ private:
     u64 motion_geometry{};    ///< vertex-stream identity of the current direct draw
     bool gbuffer_draw = false;
     bool ctr_gbuffer_draw = false; ///< SacredFire: CTR's G-buffer pass (vk_ctr_fsr3)
+    u32 sky_record = 0; ///< bbport (#16/#18): 1 + sequence of a sky draw being recorded
     std::unique_ptr<CtrFsr3> ctr_fsr3;
     std::unique_ptr<TemporalUpscaler> upscaler; // bbport: FSR (docs/upscaler.md)
     std::array<float, 2> draw_jitter{};         ///< viewport offset of the current draw, pixels
