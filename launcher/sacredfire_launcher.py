@@ -88,7 +88,7 @@ DEFAULTS = {
     "vk_validation": False,
     "extra_env": "",
 }
-INI_DEFAULTS = {"show_fps": "0", **{key: "0" for key, _, _ in PATCHES}}
+INI_DEFAULTS = {"show_fps": "0", "msaa": "0", **{key: "0" for key, _, _ in PATCHES}}
 
 
 def load_settings():
@@ -339,6 +339,10 @@ class LauncherWindow(Adw.ApplicationWindow):
         screen.add(self.present_row)
         self.fps_row = Adw.SwitchRow(title=tr("FPS counter in the corner"), active=self.ini.get("show_fps") == "1")
         screen.add(self.fps_row)
+        self.msaa_row = Adw.SwitchRow(title=tr("Game MSAA (2x)"),
+                                      subtitle=tr("Off by default: on PC it draws dotted lines in the sky and light shafts. Needs a restart"),
+                                      active=self.ini.get("msaa") == "1")
+        screen.add(self.msaa_row)
         page.add(screen)
 
         dev = Adw.PreferencesGroup(title=tr("Developer"))
@@ -456,6 +460,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         for key, row in self.patch_rows.items():
             self.ini[key] = "1" if row.get_active() else "0"
         self.ini["show_fps"] = "1" if self.fps_row.get_active() else "0"
+        self.ini["msaa"] = "1" if self.msaa_row.get_active() else "0"
         save_ini(self.ini, self.ini_lines)
         self.ini, self.ini_lines = load_ini()
 

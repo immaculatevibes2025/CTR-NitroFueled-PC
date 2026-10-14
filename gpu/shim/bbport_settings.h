@@ -96,6 +96,11 @@ struct Values {
     /// Live resolution and preset changes (run.sh): 0 off by default (startup patch, fastest
     /// on the Steam Deck and older GPUs), -1 auto (strong discrete GPUs), 1 on. On restart.
     std::atomic<int> live_resolution{0};
+    /// SacredFire: the game's 2x MSAA (G-buffer and forward passes). Off by default: on the host
+    /// GPU, single-sample colour drawn over the 2x depth buffer blends twice along triangle edges
+    /// (dotted lines in skies and light shafts). Read once at start (restart to apply);
+    /// BB_NO_MSAA=1/0 overrides it. AmdGpu::BbNoMsaa() is the switch the renderer reads.
+    std::atomic<bool> msaa{false};
     /// Why FSR 4 cannot run (assets, device features), or null. Set by the renderer.
     std::atomic<const char*> fsr4_problem{nullptr};
     std::atomic<bool> fsr4_supported{false}, fsr411_supported{false};

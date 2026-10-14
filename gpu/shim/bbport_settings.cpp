@@ -64,6 +64,8 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.debug_view = std::clamp(i, 0, DebugViewCount - 1);
     } else if (key == "show_fps") {
         v.show_fps = i != 0;
+    } else if (key == "msaa") {
+        v.msaa = i != 0;
     } else if (key == "fps_unlocked") {
         v.fps_unlocked = i != 0;
     } else if (key == "menu_pos") {
@@ -252,6 +254,7 @@ void Save() {
     put("reactive_max", fixed(v.reactive_max, 2));
     put("debug_view", std::to_string(v.debug_view.load()));
     put("show_fps", flag(v.show_fps));
+    put("msaa", flag(v.msaa));
     put("fps_unlocked", flag(v.fps_unlocked)); // read by run.sh and the Windows launcher at start
     put("fsr4_auto_exposure", flag(v.fsr4_auto_exposure));
     put("fsr4_invert_jitter", flag(v.fsr4_invert_jitter));
@@ -339,3 +342,15 @@ const char* UpscalerName(int upscaler) {
 }
 
 } // namespace BbSettings
+
+namespace AmdGpu {
+bool BbNoMsaa() {
+    static const bool value = [] {
+        if (const char* env = std::getenv("BB_NO_MSAA")) {
+            return env[0] == '1';
+        }
+        return !BbSettings::Get().msaa.load();
+    }();
+    return value;
+}
+} // namespace AmdGpu
