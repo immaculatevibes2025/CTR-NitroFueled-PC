@@ -906,7 +906,7 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
     {
         static const bool clip_fix_on = [] {
             const char* env = std::getenv("BB_CLIP_FIX");
-            return !(env && env[0] == '0');
+            return env && env[0] == '1';
         }();
         bool blended = false;
         for (u32 cb = 0; cb < key.num_color_attachments; ++cb) {
@@ -925,6 +925,19 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
         const bool depth_mismatch = db_enabled && color_samples != key.depth_samples;
         if (!all_color_samples_same && !instance.IsMixedAnySamplesSupported() ||
             all_color_samples_same && depth_mismatch && !instance.IsMixedDepthSamplesSupported()) {
+            // bbport (#16/#18): single-sample colour with a multisampled depth buffer (CTR's
+            // forward and sky passes over its 2x MSAA depth) is rasterized at the depth's sample
+            // count. Without mixed-samples support a fragment then writes the one colour sample
+            // when it covers any raster sample, so along an edge shared by two triangles both
+            // write the pixel and blended draws add up twice (dotted lines in skies and light
+            // shafts). GCN only lets a fragment update colour when it covers the colour sample
+            // (sample 0); the sample mask below does the same. BB_SAMPLE0_FIX=0 turns it off.
+            static const bool sample0_fix = [] {
+                const char* env = std::getenv("BB_SAMPLE0_FIX");
+                return !(env && env[0] == '0');
+            }();
+            key.color_sample0_only =
+                sample0_fix && all_color_samples_same && color_samples < key.depth_samples;
             key.color_samples.fill(key.depth_samples);
             key.num_samples = key.depth_samples;
         }

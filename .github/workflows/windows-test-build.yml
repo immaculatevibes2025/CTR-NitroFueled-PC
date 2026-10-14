@@ -49,4 +49,4 @@ jobs:
           gh release delete lines-test --yes --cleanup-tag 2>$null
           gh release create lines-test dist/CTR-NitroFueled-PC-lines-test-windows.zip `
             --prerelease --target $env:GITHUB_SHA --title "Test build: lines experiments" `
-            --notes "Lines experiments (issues #16, #18): watertight clipping GS (BB_CLIP_FIX=0 to disable). Not an official release. No DLSS files."
+            --notes "Lines experiments (issues #16, #18): sample-0 colour mask for 1x colour over 2x depth (BB_SAMPLE0_FIX=0 to disable). Not an official release. No DLSS files."

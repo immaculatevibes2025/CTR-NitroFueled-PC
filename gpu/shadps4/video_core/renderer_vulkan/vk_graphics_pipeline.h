@@ -56,6 +56,7 @@ struct GraphicsPipelineKey {
         AmdGpu::ProvokingVtxLast provoking_vtx_last : 1;
         u32 depth_clip_enable : 1;
         u32 clip_fix : 1; ///< bbport: watertight clipping in a generated GS (#16/#18)
+        u32 color_sample0_only : 1; ///< bbport: 1x color forced up to the depth samples (#16/#18)
     };
 
     GraphicsPipelineKey() {

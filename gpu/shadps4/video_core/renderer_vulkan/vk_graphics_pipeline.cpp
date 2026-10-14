@@ -129,6 +129,10 @@ GraphicsPipeline::GraphicsPipeline(
         };
     }
 
+    // bbport (#16/#18): GraphicsPipelineKey::color_sample0_only, only sample 0 updates colour.
+    static constexpr vk::SampleMask sample0_mask = 1u;
+    sdata.multisampling.pSampleMask = key.color_sample0_only ? &sample0_mask : nullptr;
+
     const vk::PipelineViewportDepthClipControlCreateInfoEXT clip_control = {
         .negativeOneToOne = key.clip_space == AmdGpu::ClipSpace::MinusWToW,
     };

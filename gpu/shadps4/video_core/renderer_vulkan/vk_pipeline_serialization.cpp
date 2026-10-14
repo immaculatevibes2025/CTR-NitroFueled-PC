@@ -15,7 +15,7 @@ namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
 static constexpr u32 ShaderBinaryVersion = 9u; // sacredfire: GS ring slot fold, 1D images as 2D; cube seam gradients
 static constexpr u32 ShaderMetaVersion = 8u; // sacredfire: GS runtime info compared in full
-static constexpr u32 PipelineKeyVersion = 7u; // sacredfire: GS permutations re-indexed; clip_fix GS
+static constexpr u32 PipelineKeyVersion = 8u; // sacredfire: GS permutations re-indexed; clip_fix GS; sample 0 mask
 } // namespace Serialization
 
 namespace Vulkan {
