@@ -386,8 +386,14 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
             instance_.IsAmdShaderExplicitVertexParameterSupported(),
         .supports_fragment_shader_barycentric = instance_.IsFragmentShaderBarycentricSupported(),
         .supports_shader_subgroup_clock = instance_.IsShaderSubgroupClockSupported(),
-        .needs_manual_interpolation = instance.IsFragmentShaderBarycentricSupported() &&
-                                      instance.GetDriverID() == vk::DriverId::eNvidiaProprietary,
+        // bbport: BB_MANUAL_INTERP=0/1 overrides (lines in skies/light shafts on NVIDIA, #16/#18).
+        .needs_manual_interpolation = [&] {
+            if (const char* env = std::getenv("BB_MANUAL_INTERP")) {
+                return env[0] == '1' && instance.IsFragmentShaderBarycentricSupported();
+            }
+            return instance.IsFragmentShaderBarycentricSupported() &&
+                   instance.GetDriverID() == vk::DriverId::eNvidiaProprietary;
+        }(),
         // bbport: older NVIDIA (Pascal) has no barycentrics; BB_INTERP_INT_FIX=0/1 overrides.
         .needs_integer_interpolation_fix = [&] {
             if (const char* env = std::getenv("BB_INTERP_INT_FIX")) {

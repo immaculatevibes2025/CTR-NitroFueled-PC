@@ -39,14 +39,14 @@ jobs:
           bash build.sh || { tail -200 out/gpu-build.log; exit 1; }
       - name: Package
         run: |
-          MSYS2_ROOT='C:\msys64' python packaging/windows/make_portable.py --version cube-seam-test
-          mv dist/CTR-NitroFueled-PC-portable-windows.zip dist/CTR-NitroFueled-PC-cube-seam-test-windows.zip
+          MSYS2_ROOT='C:\msys64' python packaging/windows/make_portable.py --version lines-test
+          mv dist/CTR-NitroFueled-PC-portable-windows.zip dist/CTR-NitroFueled-PC-lines-test-windows.zip
       - name: Publish test release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete cube-seam-test --yes --cleanup-tag 2>$null
-          gh release create cube-seam-test dist/CTR-NitroFueled-PC-cube-seam-test-windows.zip `
-            --prerelease --target $env:GITHUB_SHA --title "Test build: cube seam lines fix" `
-            --notes "Test build of fix/cube-seam-lines (issues #16, #18). Not an official release. No DLSS files."
+          gh release delete lines-test --yes --cleanup-tag 2>$null
+          gh release create lines-test dist/CTR-NitroFueled-PC-lines-test-windows.zip `
+            --prerelease --target $env:GITHUB_SHA --title "Test build: lines experiments" `
+            --notes "Lines experiments (issues #16, #18): BB_MANUAL_INTERP=0 switch. Not an official release. No DLSS files."
