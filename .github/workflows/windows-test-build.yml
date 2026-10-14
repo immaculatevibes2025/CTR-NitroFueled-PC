@@ -23,7 +23,7 @@ jobs:
         with:
           msystem: CLANG64
           update: true
-          location: C:\
+          release: false
           install: >-
             git patch
             mingw-w64-clang-x86_64-toolchain mingw-w64-clang-x86_64-cmake mingw-w64-clang-x86_64-ninja
