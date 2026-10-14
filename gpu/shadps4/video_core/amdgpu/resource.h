@@ -9,6 +9,20 @@
 #include "video_core/amdgpu/pixel_format.h"
 #include "video_core/amdgpu/tiling.h"
 
+#include <cstdlib>
+
+namespace AmdGpu {
+/// bbport (#16/#18 experiment): BB_NO_MSAA=1 renders every multisampled target with one sample
+/// on the host (the guest memory layout is unchanged) and reads MSAA textures as plain 2D.
+inline bool BbNoMsaa() {
+    static const bool value = [] {
+        const char* env = std::getenv("BB_NO_MSAA");
+        return env && env[0] == '1';
+    }();
+    return value;
+}
+} // namespace AmdGpu
+
 namespace AmdGpu {
 
 // Table 8.5 Buffer Resource Descriptor [Sea Islands Series Instruction Set Architecture]
@@ -310,6 +324,14 @@ struct Image {
 
     ImageType GetViewType(const bool is_array) const noexcept {
         const auto base_type = GetType();
+        if (BbNoMsaa()) {
+            if (base_type == ImageType::Color2DMsaa) {
+                return ImageType::Color2D;
+            }
+            if (base_type == ImageType::Color2DMsaaArray) {
+                return is_array ? ImageType::Color2DArray : ImageType::Color2D;
+            }
+        }
         if (IsCube()) {
             // Cube needs to remain array type regardless of instruction array specifier.
             return base_type;
