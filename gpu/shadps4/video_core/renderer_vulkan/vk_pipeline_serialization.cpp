@@ -15,7 +15,7 @@ namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
 static constexpr u32 ShaderBinaryVersion = 9u; // sacredfire: GS ring slot fold, 1D images as 2D; cube seam gradients
 static constexpr u32 ShaderMetaVersion = 8u; // sacredfire: GS runtime info compared in full
-static constexpr u32 PipelineKeyVersion = 6u; // sacredfire: GS permutations re-indexed
+static constexpr u32 PipelineKeyVersion = 7u; // sacredfire: GS permutations re-indexed; clip_fix GS
 } // namespace Serialization
 
 namespace Vulkan {
@@ -210,6 +210,7 @@ void GraphicsPipeline::SerializationSupport::Serialize(Serialization::Archive& a
     sdata.Write(multisampling);
     sdata.Write(tcs);
     sdata.Write(tes);
+    sdata.Write(clip_gs);
 }
 
 bool GraphicsPipeline::SerializationSupport::Deserialize(Serialization::Archive& ar) {
@@ -221,6 +222,7 @@ bool GraphicsPipeline::SerializationSupport::Deserialize(Serialization::Archive&
     sdata.Read(multisampling);
     sdata.Read(tcs);
     sdata.Read(tes);
+    sdata.Read(clip_gs);
     return true;
 }
 

@@ -899,6 +899,27 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
         key.color_samples[mv] = 1;
     }
 
+    // bbport (#16/#18): blended triangles crossing the camera plane get clipped by the host GPU,
+    // which can place the cut points of a shared edge differently in the two triangles; the
+    // overlap is blended twice (dotted lines along CTR's sky box edges). Such draws clip in a
+    // generated geometry shader instead (EmitClipGeometryShader). BB_CLIP_FIX=0 turns it off.
+    {
+        static const bool clip_fix_on = [] {
+            const char* env = std::getenv("BB_CLIP_FIX");
+            return !(env && env[0] == '0');
+        }();
+        bool blended = false;
+        for (u32 cb = 0; cb < key.num_color_attachments; ++cb) {
+            blended |= key.blend_controls[cb].enable != 0;
+        }
+        const auto prim = key.prim_type;
+        key.clip_fix = clip_fix_on && blended && instance.IsGeometryStageSupported() &&
+                       (prim == AmdGpu::PrimitiveType::TriangleList ||
+                        prim == AmdGpu::PrimitiveType::TriangleStrip ||
+                        prim == AmdGpu::PrimitiveType::TriangleFan ||
+                        prim == AmdGpu::PrimitiveType::Polygon);
+    }
+
     // Force all color samples to match depth samples to avoid unsupported MSAA configuration
     if (color_samples != 0) {
         const bool depth_mismatch = db_enabled && color_samples != key.depth_samples;

@@ -184,6 +184,27 @@ GraphicsPipeline::GraphicsPipeline(
             .module = modules[stage],
             .pName = "main",
         });
+    } else if (key.clip_fix && !is_rect_list && !is_quad_list && !key.motion_vectors &&
+               !infos[u32(Shader::SwStage::TessellationControl)] &&
+               !infos[u32(Shader::SwStage::TessellationEval)] &&
+               infos[u32(Shader::SwStage::Fragment)] &&
+               !runtime_infos[u32(Shader::SwStage::Fragment)].hw.fs.clip_distance_emulation) {
+        // bbport (#16/#18): watertight clipping (GraphicsPipelineKey::clip_fix).
+        if (!preloading) {
+            const auto& fs_info = runtime_infos[u32(Shader::SwStage::Fragment)].hw.fs;
+            sdata.clip_gs = Shader::Backend::SPIRV::EmitClipGeometryShader(
+                fs_info, key.provoking_vtx_last == AmdGpu::ProvokingVtxLast::Last,
+                key.clip_space == AmdGpu::ClipSpace::MinusWToW &&
+                    instance.IsDepthClipControlSupported(),
+                key.depth_clip_enable != 0);
+        }
+        if (!sdata.clip_gs.empty()) {
+            shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
+                .stage = vk::ShaderStageFlagBits::eGeometry,
+                .module = CompileSPV(sdata.clip_gs, instance.GetDevice()),
+                .pName = "main",
+            });
+        }
     }
     stage = u32(Shader::SwStage::TessellationControl);
     if (infos[stage]) {

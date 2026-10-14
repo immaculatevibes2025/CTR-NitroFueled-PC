@@ -55,6 +55,7 @@ struct GraphicsPipelineKey {
         AmdGpu::ClipSpace clip_space : 1;
         AmdGpu::ProvokingVtxLast provoking_vtx_last : 1;
         u32 depth_clip_enable : 1;
+        u32 clip_fix : 1; ///< bbport: watertight clipping in a generated GS (#16/#18)
     };
 
     GraphicsPipelineKey() {
@@ -79,6 +80,7 @@ public:
         std::vector<u32> tcs{};
         std::vector<u32> tes{};
         std::vector<u32> fragment{};
+        std::vector<u32> clip_gs{}; ///< bbport: watertight clipping GS (#16/#18)
 
         void Serialize(Serialization::Archive& ar) const;
         bool Deserialize(Serialization::Archive& ar);
