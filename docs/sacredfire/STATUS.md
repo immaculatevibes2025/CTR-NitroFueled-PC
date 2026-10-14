@@ -61,6 +61,16 @@ with the desktop apps closed.
 
 ## Known issues
 
+- **Lines in skies and light shafts** (GitHub issues #16, #18; also in upstream shadPS4): thin
+  dotted lines along straight edges in the sky and in translucent materials (light rays) on every
+  vendor. Cube maps are sampled as 2D arrays with the face picked per pixel, so a 2x2 quad that
+  straddles two faces sees its face coordinates jump and the implicit derivatives pick the smallest
+  mip along every face edge; the GCN texture unit computes cube derivatives across faces itself.
+  Fix (resource_patching_pass.cpp, `CubeFaceSafeGradients`): implicit-LOD colour samples of cube
+  images in fragment shaders rebuild the quad neighbours' 3D directions, project them onto the
+  lane's own face and sample with those gradients (bias folded in as 2^bias). Image views are
+  untouched (the cube-view backport is what crashed RADV). `BB_CUBE_SEAM_FIX=0` turns it off
+  (with `BB_CLEAR_SHADER_CACHE=1`); shader binary cache version 9. Needs confirming in game.
 - **Adventure hub sky stripes** (fixed 2026-10-09, run 31): the frame analyzer showed the final
   colour-grading pass sampling a 1024x32 lookup table built from height-1 render targets that the
   game samples as 1D textures; the cache gave those 1D views a separate image filled from guest

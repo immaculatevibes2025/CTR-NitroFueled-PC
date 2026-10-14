@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
+#include <cstdlib>
 #include <limits>
 #include "shader_recompiler/info.h"
 #include "shader_recompiler/ir/basic_block.h"
@@ -648,6 +650,95 @@ IR::Value FixCubeCoords(IR::IREmitter& ir, const AmdGpu::Image& image, const IR:
     return ir.CompositeConstruct(fixed_x, fixed_y, fixed_face);
 }
 
+// bbport: cube map seam lines (issues #16, #18). Cubes are sampled as 2D arrays with the face
+// picked per pixel, so in a 2x2 quad that straddles two faces the implicit derivatives see the
+// face coordinates jump (and flip) and the sampler picks the smallest mip: a thin dotted line along
+// every face edge, in skies and in translucent UE4 materials that read the sky/reflection cube.
+// The hardware's texture unit computes cube derivatives across faces itself. Here each lane
+// rebuilds the neighbours' 3D directions (continuous across faces) and projects them onto its own
+// face, giving face-safe coarse derivatives for an explicit-gradient sample.
+bool CubeSeamFixEnabled() {
+    static const bool enabled = [] {
+        const char* env = std::getenv("BB_CUBE_SEAM_FIX");
+        return !(env && env[0] == '0');
+    }();
+    return enabled;
+}
+
+struct CubeGradients {
+    IR::Value dx;
+    IR::Value dy;
+};
+
+CubeGradients CubeFaceSafeGradients(IR::IREmitter& ir, const IR::Value& fixed_coords,
+                                    const IR::F32& bias) {
+    const IR::F32 u{ir.CompositeExtract(fixed_coords, 0)};
+    const IR::F32 v{ir.CompositeExtract(fixed_coords, 1)};
+    const IR::F32 layer{ir.CompositeExtract(fixed_coords, 2)};
+    // Layer is slice * 6 + face.
+    const IR::F32 face =
+        ir.FPFma(ir.FPFloor(ir.FPDiv(layer, ir.Imm32(6.f))), ir.Imm32(-6.f), layer);
+
+    // Picks one of six values by face index (robust to the face being a float near an integer).
+    const auto sel = [&](const IR::F32& f, const std::array<IR::F32, 6>& vals) -> IR::F32 {
+        IR::F32 r = vals[5];
+        for (int k = 4; k >= 0; --k) {
+            r = IR::F32{ir.Select(ir.FPLessThan(f, ir.Imm32(float(k) + 0.5f)), vals[k], r)};
+        }
+        return r;
+    };
+    const IR::F32 one = ir.Imm32(1.f);
+    const IR::F32 m_one = ir.Imm32(-1.f);
+
+    // Direction from (face, s, t), OpenGL/GCN cube convention, s/t in [-1, 1].
+    const IR::F32 a = ir.FPFma(u, ir.Imm32(2.f), m_one);
+    const IR::F32 b = ir.FPFma(v, ir.Imm32(2.f), m_one);
+    const IR::F32 na = ir.FPNeg(a);
+    const IR::F32 nb = ir.FPNeg(b);
+    const IR::F32 dir_x = sel(face, {one, m_one, a, a, a, na});
+    const IR::F32 dir_y = sel(face, {nb, nb, one, m_one, nb, nb});
+    const IR::F32 dir_z = sel(face, {na, a, b, nb, one, m_one});
+
+    // Projects a direction onto this lane's face, returning (u, v) in [0, 1] face space.
+    const auto project = [&](const IR::F32& x, const IR::F32& y,
+                             const IR::F32& z) -> std::pair<IR::F32, IR::F32> {
+        const IR::F32 nx = ir.FPNeg(x);
+        const IR::F32 ny = ir.FPNeg(y);
+        const IR::F32 nz = ir.FPNeg(z);
+        const IR::F32 sc = sel(face, {nz, z, x, x, x, nx});
+        const IR::F32 tc = sel(face, {ny, ny, z, nz, ny, ny});
+        // A neighbour more than 90 degrees away cannot happen in one quad; keep ma positive.
+        const IR::F32 ma = ir.FPMax(sel(face, {x, nx, y, ny, z, nz}), ir.Imm32(1e-6f));
+        const IR::F32 inv = ir.FPDiv(ir.Imm32(0.5f), ma);
+        return {ir.FPFma(sc, inv, ir.Imm32(0.5f)), ir.FPFma(tc, inv, ir.Imm32(0.5f))};
+    };
+    // Quad lanes in a fragment shader: 0 top-left, 1 top-right, 2 bottom-left.
+    const auto lane = [&](const IR::F32& value, u32 index) -> IR::F32 {
+        return ir.BitCast<IR::F32, IR::U32>(
+            ir.QuadBroadcast(ir.BitCast<IR::U32, IR::F32>(value), ir.Imm32(index)));
+    };
+    const auto at = [&](u32 index) {
+        return project(lane(dir_x, index), lane(dir_y, index), lane(dir_z, index));
+    };
+    const auto [u0, v0] = at(0);
+    const auto [u1, v1] = at(1);
+    const auto [u2, v2] = at(2);
+    IR::F32 dudx = ir.FPSub(u1, u0);
+    IR::F32 dvdx = ir.FPSub(v1, v0);
+    IR::F32 dudy = ir.FPSub(u2, u0);
+    IR::F32 dvdy = ir.FPSub(v2, v0);
+    if (bias.IsEmpty() == false) {
+        // An explicit-gradient sample has no bias operand: scaling the footprint by 2^bias moves
+        // the selected level by bias (the sampler's own LOD bias still applies on top).
+        const IR::F32 scale = ir.FPExp2(bias);
+        dudx = ir.FPMul(dudx, scale);
+        dvdx = ir.FPMul(dvdx, scale);
+        dudy = ir.FPMul(dudy, scale);
+        dvdy = ir.FPMul(dvdy, scale);
+    }
+    return {ir.CompositeConstruct(dudx, dvdx), ir.CompositeConstruct(dudy, dvdy)};
+}
+
 void PatchImageSampleArgs(IR::Inst& inst, Info& info, const ImageResource& image_res,
                           const AmdGpu::Image& image) {
     const auto handle = inst.Arg(0);
@@ -821,6 +912,13 @@ void PatchImageSampleArgs(IR::Inst& inst, Info& info, const ImageResource& image
         if (inst_info.has_derivatives) {
             return ir.ImageGradient(handle, coords, derivatives_dx, derivatives_dy, offset,
                                     lod_clamp, inst_info);
+        }
+        // bbport: face-safe gradients for implicit-LOD cube samples (see CubeFaceSafeGradients).
+        if (image.IsCube() && !explicit_lod && !inst_info.is_depth &&
+            info.hw_stage == HwStage::Fragment && CubeSeamFixEnabled()) {
+            const auto [cube_dx, cube_dy] = CubeFaceSafeGradients(ir, coords, bias);
+            return ir.ImageGradient(handle, coords, cube_dx, cube_dy, offset, lod_clamp,
+                                    inst_info);
         }
         if (inst_info.is_depth) {
             if (explicit_lod) {
