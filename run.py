@@ -189,8 +189,10 @@ def main():
     replace = []
     for line in run_python('scripts/graphics_tab.py', game, '--out', out, '--settings', config,
                            capture=True).splitlines():
-        if '=' in line:
+        if line.startswith('archives/') and '=' in line:
             replace += ['--replace', line.strip()]
+        elif line.strip():
+            say(line.strip())
     game = Path(run_python('scripts/mods.py', game, '--out', out, *replace,
                            '--mods-dir', env.get('BB_MODS_DIR', data / 'mods'),
                            '--config', env.get('BB_MODS_CONFIG', data / 'mods.json'),
