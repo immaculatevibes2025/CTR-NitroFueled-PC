@@ -35,7 +35,7 @@ ANCHOR = b'Comp__Menu_ButtonWithIcon005_behaviors_0'
 LABELS = {'en': 'Graphics', 'fr': 'Graphismes', 'mx': 'Gráficos', 'pt': 'Gráficos'}
 DUMP = ('octane_options_menu', 'octane_options_languageselect')
 SECTOR = 0x800
-VERSION = 3  # of this script's output (the cached file is rebuilt when it changes)
+VERSION = 4  # of this script's output (the cached file is rebuilt when it changes)
 
 
 def fnv1a(text):
@@ -160,8 +160,32 @@ def write_archive(dest, files, template):
     tmp.replace(dest)
 
 
+def rename(old, new):
+    """A same-length rename of the one string `old` in a visual script."""
+    assert len(old) == len(new)
+
+    def patch(data):
+        if data.count(old + b'\0') != 1:
+            raise ValueError(f'{old.decode()} not found once')
+        return data.replace(old + b'\0', new + b'\0')
+    return patch
+
+
+# Files changed in update3.pak: logical name -> change.
+CHANGES = {f'ui/octane_options_menu_{lang}.lng': (lambda label: lambda data: relabel(data, label))(label)
+           for lang, label in LABELS.items()}
+# The Options menu's root script hides the fifth tab in this region by name: the name is changed
+# to one that matches nothing, so the hide does nothing.
+CHANGES['vsc/ui/octane_options_menu/octane_options_menu_root.igz'] = rename(
+    b'Comp__Menu_ButtonWithIcon005', b'Comp__Menu_ButtonWithIcon00X')
+# The tab's own script opens the language screen by name: it opens a project that does not exist,
+# which the port's open2_VSC hook takes as the Graphics tab (bbport_graphics_tab.cpp).
+CHANGES['vsc/ui/octane_options_menu/octane_options_menu_languageselectbutton.igz'] = rename(
+    b'Octane_Options_LanguageSelect', b'Octane_Options_BbportSettings')
+
+
 def build(game, dest, dump):
-    found = {}  # language -> (archive, index)
+    found = {}  # logical name (lower case) -> (archive, index, archive name)
     archives = []
     for name in ARCHIVES:
         path = game / 'archives' / name
@@ -176,15 +200,15 @@ def build(game, dest, dump):
                 target = dump / name / logical
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(archive.read(i))
-            for lang in LABELS:
-                if low == f'ui/octane_options_menu_{lang}.lng' and lang not in found:
-                    found[lang] = (archive, i, name)
-    if len(found) != len(LABELS):
-        raise ValueError(f'{len(found)} of {len(LABELS)} menu text tables found')
+            if low in CHANGES and low not in found:
+                found[low] = (archive, i, name)
+    if len(found) != len(CHANGES):
+        missing = ', '.join(sorted(set(CHANGES) - set(found)))
+        raise ValueError(f'not found: {missing}')
     files = []
-    for lang, (archive, i, name) in found.items():
+    for low, (archive, i, name) in found.items():
         full, logical = archive.names[i]
-        files.append((full, logical, archive.infos[i][1] & ~0xFF, relabel(archive.read(i), LABELS[lang])))
+        files.append((full, logical, archive.infos[i][1] & ~0xFF, CHANGES[low](archive.read(i))))
         print(f'Graphics tab: {logical} from {name}')
     dest.parent.mkdir(parents=True, exist_ok=True)
     write_archive(dest, files, archives[0])
