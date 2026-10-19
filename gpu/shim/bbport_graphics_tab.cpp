@@ -4,8 +4,6 @@
 // screen. Its label comes from scripts/graphics_tab.py (relabelled menu text in update3.pak).
 //
 // Changes to the game's code (CTR NF 1.21, image offsets), visual-script nodes:
-//  - CGameUtilityNodes::regionSwitch_VSC (0x10de090), used by the Options menu's root script,
-//    fires none of its region outputs.
 //  - igGuiPlaceableNodes::hidePlaceable_VSC (0x26f6b0): the fifth tab
 //    (Comp__Menu_ButtonWithIcon005) is not hidden while an Options menu is the last menu opened.
 //  - CGuiNodes::open2_VSC (0x1109200), which opens a menu project: Octane_Options_LanguageSelect
@@ -103,27 +101,50 @@ void* Input(void* context, void* args) {
     return object;
 }
 
-/// The object's name: the first identifier-like string a field among its first 16 points to
-/// (igNamedObject::_name). `where` gets the field offset.
+/// An identifier-like string at `address` (at least 4 characters: letters, digits, '_').
+bool Identifier(u64 address, std::string& out) {
+    char text[96] = {};
+    if (address < 0x10000 || (address & 0xffff000000000000ull) ||
+        !SafeRead(reinterpret_cast<void*>(address), text, 64)) {
+        return false;
+    }
+    std::size_t n = 0;
+    while (text[n] && (std::isalnum(static_cast<unsigned char>(text[n])) || text[n] == '_')) {
+        ++n;
+    }
+    if (n < 4 || text[n] != 0) {
+        return false;
+    }
+    out = text;
+    return true;
+}
+
+/// The object's name (igNamedObject::_name and the like): a string a field among the object's
+/// first 32 points to, else one a field of a pointed-to object points to (one level down).
+/// `where` gets the field offset (one level down: offset * 0x1000 + inner offset).
 std::string Name(void* object, int* where = nullptr) {
-    u64 fields[16];
+    u64 fields[32];
     if (!object || !SafeRead(object, fields, sizeof(fields))) {
         return {};
     }
-    for (int i = 1; i < 16; ++i) {
-        char text[96] = {};
-        if (fields[i] < 0x10000 || !SafeRead(reinterpret_cast<void*>(fields[i]), text, sizeof(text) - 1)) {
+    std::string text;
+    for (int i = 1; i < 32; ++i) {
+        if (Identifier(fields[i], text)) {
+            if (where) *where = i * 8;
+            return text;
+        }
+    }
+    for (int i = 1; i < 32; ++i) {
+        u64 inner[16];
+        if (fields[i] < 0x10000 || (fields[i] & 0xffff000000000000ull) ||
+            !SafeRead(reinterpret_cast<void*>(fields[i]), inner, sizeof(inner))) {
             continue;
         }
-        std::size_t n = 0;
-        while (text[n] && (std::isalnum(static_cast<unsigned char>(text[n])) || text[n] == '_')) {
-            ++n;
-        }
-        if (n >= 4 && text[n] == 0) {
-            if (where) {
-                *where = i * 8;
+        for (int j = 0; j < 16; ++j) {
+            if (Identifier(inner[j], text)) {
+                if (where) *where = i * 8 * 0x1000 + j * 8;
+                return text;
             }
-            return text;
         }
     }
     return {};
@@ -243,7 +264,6 @@ void PatchImage(unsigned char* base, std::uint64_t size) {
 #ifdef _WIN32
     FlushInstructionCache(GetCurrentProcess(), stubs, 128);
 #endif
-    std::memset(base + RegionQueryCall, 0x90, sizeof(RegionQueryCode));
     std::printf("Graphics tab: on (Options menu, fifth tab)\n");
 }
 
