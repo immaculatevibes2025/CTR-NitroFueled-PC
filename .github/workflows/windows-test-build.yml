@@ -48,5 +48,5 @@ jobs:
         run: |
           gh release delete graphics-tab-test --yes --cleanup-tag 2>$null
           gh release create graphics-tab-test dist/CTR-NitroFueled-PC-graphics-tab-test-windows.zip `
-            --prerelease --target $env:GITHUB_SHA --title "Test build: MSAA setting (sky lines fix)" `
+            --prerelease --target $env:GITHUB_SHA --title "Test build: Graphics tab" `
             --notes "Test build: Graphics tab in the Options menu (opens the settings menu), plus MSAA off. Not an official release. No DLSS files."
