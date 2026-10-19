@@ -19,7 +19,9 @@
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <algorithm>
 #include <string>
+#include <vector>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -242,37 +244,212 @@ u64 NavItem(u64 placeable, u64* prev = nullptr) {
     return 0;
 }
 
-/// The tab's label: its navigation item has no text (the menu's text table gives it none in this
-/// region); it gets "Graphics" at the field where its neighbour's item keeps its text.
+// The game's strings: interned in its string pool (pointer at 0x2af2600) by 0x1574080 (pool,
+// text), which returns a string with a reference taken (count at -8); 0x1518e30 (pool, string -
+// 0x10) drops one. A text placeable shows the string at +0x30 (CGuiBehaviorLanguageItem's init,
+// 0x1276c70, sets it so and marks the placeable shown: +0xc |= 0x1000).
+constexpr u64 StringPool = 0x2af2600, Intern = 0x1574080, Unref = 0x1518e30;
+using InternFn = char* PS4_SYSV_ABI (*)(void*, const char*);
+using UnrefFn = void PS4_SYSV_ABI (*)(void*, void*);
+
+void* Pool() {
+    return *reinterpret_cast<void**>(image + StringPool);
+}
+
+char* GameString(const char* text) {
+    return reinterpret_cast<InternFn>(image + Intern)(Pool(), text);
+}
+
+void DropString(char* string) {
+    if (string) {
+        reinterpret_cast<UnrefFn>(image + Unref)(Pool(), string - 0x10);
+    }
+}
+
+/// A string field the game owns: the new text replaces the old (whose reference is dropped).
+void SetStringField(u64 address, const char* text) {
+    char** field = reinterpret_cast<char**>(address);
+    char* old = *field;
+    *field = GameString(text);
+    DropString(old);
+}
+
+void SetText(u64 placeable, const char* text) {
+    if (!placeable) {
+        return;
+    }
+    SetStringField(placeable + 0x30, text);
+    *reinterpret_cast<u32*>(placeable + 0xc) |= 0x1000;
+}
+
+/// The tab's label: its navigation item (CGuiBehaviorNavigationItem: _itemText +0xe8,
+/// _textPlaceable +0xf0, from the game's field tables) gets "Graphics" (the text table has none
+/// for it in this region, so the button keeps its template's "Crash Cove").
 void Relabel(void* tab) {
-    static std::atomic<bool> done{false};
-    static char label[] = "Graphics";
-    if (done.exchange(true)) {
+    const u64 item = NavItem(reinterpret_cast<u64>(tab));
+    if (!item) {
+        std::printf("Graphics tab: label: no navigation item\n");
         return;
     }
-    u64 prev = 0;
-    const u64 item = NavItem(reinterpret_cast<u64>(tab), &prev);
-    const u64 other = prev ? NavItem(prev) : 0;
-    if (!item || !other) {
-        std::printf("Graphics tab: label: no navigation items (%llx, %llx)\n",
-                    static_cast<unsigned long long>(item), static_cast<unsigned long long>(other));
-        return;
+    SetStringField(item + 0xe8, "Graphics");
+    SetText(*reinterpret_cast<u64*>(item + 0xf0), "Graphics");
+    std::printf("Graphics tab: labelled\n");
+    std::fflush(stdout);
+}
+
+// ---- The Graphics page: the language screen's rows, relabelled as settings -----------------
+// CGuiBehaviorLanguageItem (size 0x38): +0x10 its text placeable, +0x28 its language. Its event
+// handler (0x1276c70: this, event, ...) fills the row on the list's init event (event class at
+// 0x2a21db0) and, on the input event class (0x2a21d10) with type 8 (+0x18), sets the language
+// and opens the "Language Selected" dialog. Here: each row shows a setting; pressing changes it.
+constexpr u64 LanguageItemEvent = 0x1276c70;
+constexpr u64 InitEventMeta = 0x2a21db0, InputEventMeta = 0x2a21d10;
+VscFn language_item_original = nullptr;
+
+bool IsA(void* event, u64 meta_global) {
+    using MetaFn = u64 PS4_SYSV_ABI (*)(void*);
+    const u64 target = *reinterpret_cast<u64*>(image + meta_global);
+    u64 meta = reinterpret_cast<MetaFn>(**reinterpret_cast<u64**>(event))(event);
+    for (int depth = 0; meta && depth < 16; ++depth) {
+        if (meta == target) {
+            return true;
+        }
+        meta = *reinterpret_cast<u64*>(meta + 0x40);
     }
-    u64 mine[0x48] = {}, theirs[0x48] = {};
-    SafeRead(reinterpret_cast<void*>(item), mine, sizeof(mine));
-    SafeRead(reinterpret_cast<void*>(other), theirs, sizeof(theirs));
-    for (int i = 1; i < 0x48; ++i) {
-        std::string text;
-        if (IsText(theirs[i], &text)) {
-            std::printf("Graphics tab: label: neighbour +0x%x \"%s\", tab %llx\n", i * 8, text.c_str(),
-                        static_cast<unsigned long long>(mine[i]));
-            if (!mine[i]) {
-                *reinterpret_cast<u64*>(item + 8 * i) = reinterpret_cast<u64>(label);
-                std::printf("Graphics tab: label set at +0x%x\n", i * 8);
+    return false;
+}
+
+std::mutex rows_mutex;
+std::vector<u64> rows; ///< the language items, in the order the list filled them
+
+const char* OnOff(bool on) {
+    return on ? "On" : "Off";
+}
+
+/// Row `index`'s text; with `change`, its setting moves to the next value first.
+std::string Row(std::size_t index, bool change) {
+    auto& v = BbSettings::Get();
+    char text[96];
+    switch (index) {
+    case 0: {
+        int r = v.render_res.load();
+        if (change) {
+            r = r < 0 ? 2 : (r + 1) % BbSettings::RenderResCount;
+            v.render_res = r;
+        }
+        std::snprintf(text, sizeof(text), "Resolution: %dp", r < 0 ? 1080 : BbSettings::RenderResHeights[r]);
+        return text;
+    }
+    case 1: {
+        int t = v.temporal.load();
+        if (change) {
+            t = (t + 1) % BbSettings::TemporalCount;
+            v.temporal = t;
+        }
+        static const char* names[] = {"Off", "FSR 1", "FSR 3", "DLSS"};
+        std::snprintf(text, sizeof(text), "Upscaling: %s", names[t % 4]);
+        return text;
+    }
+    case 2: {
+        int q = v.dlss_quality.load();
+        if (change) {
+            q = (q + 1) % BbSettings::DlssQualityCount;
+            v.dlss_quality = q;
+        }
+        static const char* names[] = {"Auto", "DLAA", "Quality", "Balanced", "Performance", "Ultra Perf."};
+        std::snprintf(text, sizeof(text), "DLSS quality: %s", names[q % 6]);
+        return text;
+    }
+    case 3:
+    case 4: {
+        auto& patch = v.game_patches[index == 3 ? 0 : 1];
+        if (change) {
+            patch = !patch.load();
+        }
+        // Row 4 is the game's motion blur: on unless the patch removes it.
+        std::snprintf(text, sizeof(text), index == 3 ? "60 FPS: %s" : "Motion blur: %s",
+                      OnOff(index == 3 ? patch.load() : !patch.load()));
+        return text;
+    }
+    case 5: {
+        static const int limits[] = {30, 60, 120, 144, 0};
+        int limit = v.fps_limit.load(), k = 0;
+        while (k < 5 && limits[k] != limit) {
+            ++k;
+        }
+        if (change) {
+            limit = limits[(k + 1) % 5];
+            v.fps_limit = limit;
+        }
+        if (limit) {
+            std::snprintf(text, sizeof(text), "FPS limit: %d", limit);
+        } else {
+            std::snprintf(text, sizeof(text), "FPS limit: Off");
+        }
+        return text;
+    }
+    case 6:
+        if (change) {
+            v.show_fps = !v.show_fps.load();
+        }
+        std::snprintf(text, sizeof(text), "FPS counter: %s", OnOff(v.show_fps));
+        return text;
+    case 7:
+        if (change) {
+            v.msaa = !v.msaa.load();
+        }
+        std::snprintf(text, sizeof(text), "MSAA: %s", OnOff(v.msaa));
+        return text;
+    default:
+        return "";
+    }
+}
+
+u64 PS4_SYSV_ABI LanguageItemHook(void* self, void* event, void* a2, void* a3, void* a4, void* a5) {
+    const u64 item = reinterpret_cast<u64>(self);
+    if (event && IsA(event, InputEventMeta)) {
+        const u32 type = *reinterpret_cast<u32*>(static_cast<u8*>(event) + 0x18);
+        std::size_t index = SIZE_MAX;
+        {
+            std::scoped_lock lock{rows_mutex};
+            for (std::size_t i = 0; i < rows.size(); ++i) {
+                if (rows[i] == item) {
+                    index = i;
+                }
             }
         }
+        if (index != SIZE_MAX && type == 8) {
+            const std::string text = Row(index, true);
+            SetText(*reinterpret_cast<u64*>(item + 0x10), text.c_str());
+            BbSettings::Save();
+            std::printf("Graphics tab: %s\n", text.c_str());
+            std::fflush(stdout);
+            return 0; // no language change, no dialog
+        }
+        if (index != SIZE_MAX && type != 8) {
+            static std::atomic<int> logged{0};
+            if (logged.fetch_add(1) < 20) {
+                std::printf("Graphics tab: row %zu input %u\n", index, type);
+            }
+        }
+        return language_item_original(self, event, a2, a3, a4, a5);
     }
-    std::fflush(stdout);
+    const u64 result = language_item_original(self, event, a2, a3, a4, a5);
+    if (event && IsA(event, InitEventMeta)) {
+        std::size_t index;
+        {
+            std::scoped_lock lock{rows_mutex};
+            index = std::find(rows.begin(), rows.end(), item) - rows.begin();
+            if (index == rows.size()) {
+                rows.push_back(item);
+            }
+        }
+        const std::string text = Row(index, false);
+        SetText(*reinterpret_cast<u64*>(item + 0x10), text.empty() ? " " : text.c_str());
+        std::printf("Graphics tab: row %zu \"%s\"\n", index, text.c_str());
+        std::fflush(stdout);
+    }
+    return result;
 }
 
 u64 PS4_SYSV_ABI HideHook(void* context, void* args, void* a2, void* a3, void* a4, void* a5) {
@@ -307,8 +484,9 @@ u64 PS4_SYSV_ABI Open2Hook(void* context, void* args, void* a2, void* a3, void* 
         last_opened = name;
     }
     if (ours) {
-        BbOverlay::OpenMenu();
-        return 0;
+        // The Graphics page: the language screen opens; its rows are filled again.
+        std::scoped_lock lock{rows_mutex};
+        rows.clear();
     }
     return open2_original(context, args, a2, a3, a4, a5);
 }
@@ -367,8 +545,13 @@ void PatchImage(unsigned char* base, std::uint64_t size) {
         show_original = Detour(stubs + 128, Show, PlaceablePrologue, sizeof(PlaceablePrologue),
                                reinterpret_cast<const void*>(&ShowHook));
     }
+    if (!std::memcmp(base + LanguageItemEvent, Open2Prologue, sizeof(Open2Prologue))) {
+        language_item_original = Detour(stubs + 192, LanguageItemEvent, Open2Prologue,
+                                        sizeof(Open2Prologue),
+                                        reinterpret_cast<const void*>(&LanguageItemHook));
+    }
 #ifdef _WIN32
-    FlushInstructionCache(GetCurrentProcess(), stubs, 192);
+    FlushInstructionCache(GetCurrentProcess(), stubs, 256);
 #endif
     std::printf("Graphics tab: on (Options menu, fifth tab)\n");
 }
