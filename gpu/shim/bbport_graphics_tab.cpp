@@ -413,13 +413,25 @@ constexpr std::size_t RestartRow = 6;   ///< "Restart to apply", shown while a c
 /// A row's visibility: its placeable (CGuiBehaviorLanguageItem::_placeable, +0x30) and text
 /// placeable (+0x10), with hidePlaceable/showPlaceable's flags (+0xc: 0x1400 hidden, 0x1000 shown).
 void ShowRow(u64 item, bool shown) {
-    for (u64 field : {item + 0x30, item + 0x10}) {
-        u64 placeable = 0;
-        if (!SafeRead(reinterpret_cast<void*>(field), &placeable, 8) || !placeable) {
+    // The row's own placeable is the text placeable's parent (igGuiPlaceable +0x40): the bar.
+    u64 text = 0, parent = 0;
+    SafeRead(reinterpret_cast<void*>(item + 0x10), &text, 8);
+    if (text) {
+        SafeRead(reinterpret_cast<void*>(text + 0x40), &parent, 8);
+    }
+    static std::atomic<int> logged{0};
+    if (logged.fetch_add(1) < 8) {
+        std::printf("Graphics tab: row %llx text %llx parent %llx %s\n",
+                    static_cast<unsigned long long>(item), static_cast<unsigned long long>(text),
+                    static_cast<unsigned long long>(parent), shown ? "shown" : "hidden");
+    }
+    for (u64 placeable : {parent, text}) {
+        if (!placeable) {
             continue;
         }
         u32& flags = *reinterpret_cast<u32*>(placeable + 0xc);
         flags = shown ? ((flags & ~0x1400u) | 0x1000u) : (flags | 0x1400u);
+        *reinterpret_cast<float*>(placeable + 0xe0) = shown ? 1.0f : 0.0f; // _alpha
     }
 }
 
