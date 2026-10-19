@@ -31,6 +31,8 @@
 #include <unistd.h>
 #endif
 
+extern "C" void runtime_restart(void); // bb-probe (probe.c): run.py starts the game again
+
 namespace BbOverlay {
 void OpenMenu(); // bbport_overlay.h (Vulkan headers)
 }
@@ -393,6 +395,49 @@ std::string Row(std::size_t index, bool change) {
     }
 }
 
+/// Settings on the page that apply only after a restart (as the settings menu counts them).
+bool NeedsRestart() {
+    auto& v = BbSettings::Get();
+    bool restart = BbSettings::ResolutionNeedsRestart() || BbSettings::RenderSizeNeedsRestart();
+    for (int g = 0; g < BbSettings::GamePatchCount; ++g) {
+        restart |= v.game_patches[g] != v.startup_game_patches[g];
+    }
+    restart |= v.render_res != v.startup_render_res || v.temporal != v.startup_temporal ||
+               v.dlss_quality != v.startup_dlss_quality;
+    return restart;
+}
+
+constexpr std::size_t SettingRows = 6;  ///< rows 0..5: the settings
+constexpr std::size_t RestartRow = 6;   ///< "Restart to apply", shown while a change waits
+
+/// A row's visibility: its placeable (CGuiBehaviorLanguageItem::_placeable, +0x30) and text
+/// placeable (+0x10), with hidePlaceable/showPlaceable's flags (+0xc: 0x1400 hidden, 0x1000 shown).
+void ShowRow(u64 item, bool shown) {
+    for (u64 field : {item + 0x30, item + 0x10}) {
+        u64 placeable = 0;
+        if (!SafeRead(reinterpret_cast<void*>(field), &placeable, 8) || !placeable) {
+            continue;
+        }
+        u32& flags = *reinterpret_cast<u32*>(placeable + 0xc);
+        flags = shown ? ((flags & ~0x1400u) | 0x1000u) : (flags | 0x1400u);
+    }
+}
+
+void UpdateRestartRow() {
+    u64 item = 0;
+    {
+        std::scoped_lock lock{rows_mutex};
+        if (rows.size() > RestartRow) {
+            item = rows[RestartRow];
+        }
+    }
+    if (item) {
+        const bool needed = NeedsRestart();
+        SetText(*reinterpret_cast<u64*>(item + 0x10), needed ? "Restart to apply" : " ");
+        ShowRow(item, needed);
+    }
+}
+
 u64 PS4_SYSV_ABI LanguageItemHook(void* self, void* event, void* a2, void* a3, void* a4, void* a5) {
     const u64 item = reinterpret_cast<u64>(self);
     if (event && IsA(event, InputEventMeta)) {
@@ -406,10 +451,21 @@ u64 PS4_SYSV_ABI LanguageItemHook(void* self, void* event, void* a2, void* a3, v
                 }
             }
         }
+        if (index == RestartRow && type == 8 && NeedsRestart()) {
+            BbSettings::Save();
+            std::printf("Graphics tab: restarting to apply\n");
+            std::fflush(stdout);
+            runtime_restart();
+            return 0;
+        }
+        if (index != SIZE_MAX && index >= SettingRows) {
+            return 0; // the rows past the settings do nothing
+        }
         if (index != SIZE_MAX && type == 8) {
             const std::string text = Row(index, true);
             SetText(*reinterpret_cast<u64*>(item + 0x10), text.c_str());
             BbSettings::Save();
+            UpdateRestartRow();
             std::printf("Graphics tab: %s\n", text.c_str());
             std::fflush(stdout);
             return 0; // no language change, no dialog
@@ -434,6 +490,11 @@ u64 PS4_SYSV_ABI LanguageItemHook(void* self, void* event, void* a2, void* a3, v
         }
         const std::string text = Row(index, false);
         SetText(*reinterpret_cast<u64*>(item + 0x10), text.empty() ? " " : text.c_str());
+        if (index == RestartRow) {
+            UpdateRestartRow();
+        } else if (index > RestartRow) {
+            ShowRow(item, false); // no setting: the row is hidden
+        }
         std::printf("Graphics tab: row %zu \"%s\"\n", index, text.c_str());
         std::fflush(stdout);
     }
