@@ -129,9 +129,26 @@ std::string Name(void* object, int* where = nullptr) {
     return {};
 }
 
+/// The first calls: the raw object and its first fields, for finding the name field.
+void Dump(const char* what, void* args, void* object) {
+    static std::atomic<int> dumped{0};
+    if (dumped.fetch_add(1) >= 12) {
+        return;
+    }
+    u64 fields[8] = {};
+    const bool ok = object && SafeRead(object, fields, sizeof(fields));
+    std::printf("Graphics tab: %s args=%p object=%p%s", what, args, object, ok ? " fields" : "");
+    for (int i = 0; ok && i < 8; ++i) {
+        std::printf(" %llx", static_cast<unsigned long long>(fields[i]));
+    }
+    std::printf("\n");
+}
+
 u64 PS4_SYSV_ABI Open2Hook(void* context, void* args, void* a2, void* a3, void* a4, void* a5) {
     int where = -1;
-    const std::string name = Name(Input(context, args), &where);
+    void* object = Input(context, args);
+    Dump("open", args, object);
+    const std::string name = Name(object, &where);
     const bool ours = name == Project;
     if (open_logged.fetch_add(1) < 40) {
         std::printf("Graphics tab: open %s (+0x%x)%s\n", name.empty() ? "(no name)" : name.c_str(),
@@ -151,7 +168,9 @@ u64 PS4_SYSV_ABI Open2Hook(void* context, void* args, void* a2, void* a3, void* 
 
 u64 PS4_SYSV_ABI HideHook(void* context, void* args, void* a2, void* a3, void* a4, void* a5) {
     int where = -1;
-    const std::string name = Name(Input(context, args), &where);
+    void* object = Input(context, args);
+    Dump("hide", args, object);
+    const std::string name = Name(object, &where);
     bool keep = false;
     std::string menu;
     if (name == Tab) {
