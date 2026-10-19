@@ -189,8 +189,96 @@ bool IsTab(void* object, const char* what) {
     return tab;
 }
 
+/// The language screen's project (ui/Octane_Options_LanguageSelect.igz, loaded in place): its
+/// igGuiProject has pointers to its own data at +0x10, +0x18, +0x38 and +0xa0, at these distances.
+bool IsLanguageProject(void* object) {
+    u64 f[0x15] = {};
+    if (!object || !SafeRead(object, f, sizeof(f))) {
+        return false;
+    }
+    const u64 o = reinterpret_cast<u64>(object);
+    return f[2] == o + 0xf0 && f[3] == o + 0x210 && f[7] == o + 0x5d0 && f[0x14] == o + 0x610;
+}
+
+/// A readable text pointer: printable characters up to a terminator.
+bool IsText(u64 address, std::string* out = nullptr) {
+    char text[48] = {};
+    if (address < 0x10000 || (address >> 48) || !SafeRead(reinterpret_cast<void*>(address), text, 40)) {
+        return false;
+    }
+    std::size_t n = 0;
+    while (n < 40 && text[n] >= 0x20 && text[n] < 0x7f) {
+        ++n;
+    }
+    if (n < 3 || text[n] != 0) {
+        return false;
+    }
+    if (out) {
+        *out = text;
+    }
+    return true;
+}
+
+/// The navigation item among a placeable's behaviors (+0xe8: igGuiBehaviorList, its data at +0x20,
+/// count at +0x10): the one that points back at the placeable's neighbours (+0x110, +0x118).
+u64 NavItem(u64 placeable, u64* prev = nullptr) {
+    u64 list = 0, count = 0, items = 0;
+    if (!SafeRead(reinterpret_cast<void*>(placeable + 0xe8), &list, 8) || !list ||
+        !SafeRead(reinterpret_cast<void*>(list + 0x10), &count, 8) ||
+        !SafeRead(reinterpret_cast<void*>(list + 0x20), &items, 8) || !items) {
+        return 0;
+    }
+    count &= 0xffffffff;
+    for (u64 i = 0; i < count && i < 8; ++i) {
+        u64 b = 0, links[2] = {};
+        if (SafeRead(reinterpret_cast<void*>(items + 8 * i), &b, 8) && b &&
+            SafeRead(reinterpret_cast<void*>(b + 0x110), links, sizeof(links)) && links[0] && links[1]) {
+            if (prev) {
+                *prev = links[1];
+            }
+            return b;
+        }
+    }
+    return 0;
+}
+
+/// The tab's label: its navigation item has no text (the menu's text table gives it none in this
+/// region); it gets "Graphics" at the field where its neighbour's item keeps its text.
+void Relabel(void* tab) {
+    static std::atomic<bool> done{false};
+    static char label[] = "Graphics";
+    if (done.exchange(true)) {
+        return;
+    }
+    u64 prev = 0;
+    const u64 item = NavItem(reinterpret_cast<u64>(tab), &prev);
+    const u64 other = prev ? NavItem(prev) : 0;
+    if (!item || !other) {
+        std::printf("Graphics tab: label: no navigation items (%llx, %llx)\n",
+                    static_cast<unsigned long long>(item), static_cast<unsigned long long>(other));
+        return;
+    }
+    u64 mine[0x48] = {}, theirs[0x48] = {};
+    SafeRead(reinterpret_cast<void*>(item), mine, sizeof(mine));
+    SafeRead(reinterpret_cast<void*>(other), theirs, sizeof(theirs));
+    for (int i = 1; i < 0x48; ++i) {
+        std::string text;
+        if (IsText(theirs[i], &text)) {
+            std::printf("Graphics tab: label: neighbour +0x%x \"%s\", tab %llx\n", i * 8, text.c_str(),
+                        static_cast<unsigned long long>(mine[i]));
+            if (!mine[i]) {
+                *reinterpret_cast<u64*>(item + 8 * i) = reinterpret_cast<u64>(label);
+                std::printf("Graphics tab: label set at +0x%x\n", i * 8);
+            }
+        }
+    }
+    std::fflush(stdout);
+}
+
 u64 PS4_SYSV_ABI HideHook(void* context, void* args, void* a2, void* a3, void* a4, void* a5) {
-    if (IsTab(Input(context, args), "hide")) {
+    void* object = Input(context, args);
+    if (IsTab(object, "hide")) {
+        Relabel(object);
         return 0; // stays shown
     }
     return hide_original(context, args, a2, a3, a4, a5);
@@ -208,7 +296,7 @@ u64 PS4_SYSV_ABI Open2Hook(void* context, void* args, void* a2, void* a3, void* 
     const std::string name = Name(object, &where);
     // The tab's script (relabelled by scripts/graphics_tab.py) names a project that does not
     // exist: its input comes back empty. Every other menu opens with its project.
-    const bool ours = !object || name == Project;
+    const bool ours = !object || name == Project || IsLanguageProject(object);
     if (open_logged.fetch_add(1) < 40) {
         std::printf("Graphics tab: open %s (+0x%x)%s\n", name.empty() ? "(no name)" : name.c_str(),
                     where, ours ? " -> settings menu" : "");
