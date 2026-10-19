@@ -52,15 +52,22 @@ constexpr u64 PinGetter = 0x4708a0;
 constexpr u64 Release = 0x150a790;
 
 constexpr char Project[] = "Octane_Options_LanguageSelect";
-constexpr char Tab[] = "Comp__Menu_ButtonWithIcon005";
+/// hidePlaceable_VSC / showPlaceable_VSC (same prologue: push rbp; mov rbp,rsp; push r15;
+/// push r14; push rbx; sub rsp,0x18). The game's menu objects are its .igz data in place: the
+/// fifth tab's placeable (ui/Octane_Options_Menu.igz, 1.21 update) has the position (40, 420)
+/// at +0x60, which no other placeable there has.
+constexpr u64 Hide = 0x26f6b0, Show = 0x26f740;
+constexpr u8 PlaceablePrologue[13] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41,
+                                      0x56, 0x53, 0x48, 0x83, 0xec, 0x18};
+constexpr float TabPosition[2] = {40.0f, 420.0f};
 
 using VscFn = u64 PS4_SYSV_ABI (*)(void*, void*, void*, void*, void*, void*);
 using GetterFn = void PS4_SYSV_ABI (*)(void*, void*, void**);
 using ReleaseFn = void PS4_SYSV_ABI (*)(void*);
 
 u8* image = nullptr;
-VscFn open2_original = nullptr, hide_original = nullptr;
-std::atomic<int> open_logged{0}, hide_logged{0};
+VscFn open2_original = nullptr, hide_original = nullptr, show_original = nullptr;
+std::atomic<int> open_logged{0}, placeable_logged{0};
 std::mutex last_mutex;
 std::string last_opened;
 
@@ -160,6 +167,40 @@ void Dump(const char* what, void* args, void* object) {
     std::printf("\n");
 }
 
+/// A placeable's state for the log: position (+0x60), flags (+0xc), alpha (+0xe0).
+bool IsTab(void* object, const char* what) {
+    struct {
+        u8 head[0x60];
+        float position[2];
+    } p{};
+    u32 flags = 0;
+    float alpha = -1.0f;
+    if (!object || !SafeRead(object, &p, sizeof(p))) {
+        return false;
+    }
+    SafeRead(static_cast<u8*>(object) + 0xc, &flags, sizeof(flags));
+    SafeRead(static_cast<u8*>(object) + 0xe0, &alpha, sizeof(alpha));
+    const bool tab = p.position[0] == TabPosition[0] && p.position[1] == TabPosition[1];
+    if (placeable_logged.fetch_add(1) < 80 || tab) {
+        std::printf("Graphics tab: %s %p at (%g, %g) flags %x alpha %g%s\n", what, object,
+                    p.position[0], p.position[1], flags, alpha, tab ? " <- the tab" : "");
+        std::fflush(stdout);
+    }
+    return tab;
+}
+
+u64 PS4_SYSV_ABI HideHook(void* context, void* args, void* a2, void* a3, void* a4, void* a5) {
+    if (IsTab(Input(context, args), "hide")) {
+        return 0; // stays shown
+    }
+    return hide_original(context, args, a2, a3, a4, a5);
+}
+
+u64 PS4_SYSV_ABI ShowHook(void* context, void* args, void* a2, void* a3, void* a4, void* a5) {
+    IsTab(Input(context, args), "show");
+    return show_original(context, args, a2, a3, a4, a5);
+}
+
 u64 PS4_SYSV_ABI Open2Hook(void* context, void* args, void* a2, void* a3, void* a4, void* a5) {
     int where = -1;
     void* object = Input(context, args);
@@ -231,8 +272,15 @@ void PatchImage(unsigned char* base, std::uint64_t size) {
     image = base;
     open2_original = Detour(stubs, Open2, Open2Prologue, sizeof(Open2Prologue),
                             reinterpret_cast<const void*>(&Open2Hook));
+    if (!std::memcmp(base + Hide, PlaceablePrologue, sizeof(PlaceablePrologue)) &&
+        !std::memcmp(base + Show, PlaceablePrologue, sizeof(PlaceablePrologue))) {
+        hide_original = Detour(stubs + 64, Hide, PlaceablePrologue, sizeof(PlaceablePrologue),
+                               reinterpret_cast<const void*>(&HideHook));
+        show_original = Detour(stubs + 128, Show, PlaceablePrologue, sizeof(PlaceablePrologue),
+                               reinterpret_cast<const void*>(&ShowHook));
+    }
 #ifdef _WIN32
-    FlushInstructionCache(GetCurrentProcess(), stubs, 128);
+    FlushInstructionCache(GetCurrentProcess(), stubs, 192);
 #endif
     std::printf("Graphics tab: on (Options menu, fifth tab)\n");
 }
