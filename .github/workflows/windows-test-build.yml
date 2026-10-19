@@ -40,7 +40,7 @@ jobs:
       - name: Build
         run: |
           bash build.sh > build-output.txt 2>&1 || {
-            { tail -60 build-output.txt; grep -E 'error|Error' out/gpu-build.log | head -60; } > fail.txt
+            { grep -B3 -A8 -E ' error:|error: |undefined' out/gpu-build.log | grep -v warning | head -150; tail -20 build-output.txt; } > fail.txt
             cat fail.txt
             exit 1; }
       - name: Publish build errors
