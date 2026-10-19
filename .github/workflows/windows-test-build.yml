@@ -1,0 +1,52 @@
+name: windows-test-build
+
+on:
+  push:
+    branches: [build/graphics-tab]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: true
+          release: false
+          install: >-
+            git patch
+            mingw-w64-clang-x86_64-toolchain mingw-w64-clang-x86_64-cmake mingw-w64-clang-x86_64-ninja
+            mingw-w64-clang-x86_64-pkgconf mingw-w64-clang-x86_64-python
+            mingw-w64-clang-x86_64-vulkan-headers mingw-w64-clang-x86_64-vulkan-loader
+            mingw-w64-clang-x86_64-vulkan-memory-allocator mingw-w64-clang-x86_64-glslang
+            mingw-w64-clang-x86_64-sdl3 mingw-w64-clang-x86_64-fmt mingw-w64-clang-x86_64-boost
+            mingw-w64-clang-x86_64-robin-map mingw-w64-clang-x86_64-xxhash mingw-w64-clang-x86_64-ffmpeg
+            mingw-w64-clang-x86_64-zydis mingw-w64-clang-x86_64-spirv-tools
+            mingw-w64-clang-x86_64-spirv-headers mingw-w64-clang-x86_64-spirv-cross
+      - name: Build
+        run: |
+          bash build.sh || { tail -200 out/gpu-build.log; exit 1; }
+      - name: Package
+        run: |
+          MSYS2_ROOT='C:\msys64' python packaging/windows/make_portable.py --version graphics-tab-test
+          mv dist/CTR-NitroFueled-PC-portable-windows.zip dist/CTR-NitroFueled-PC-graphics-tab-test-windows.zip
+      - name: Publish test release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete graphics-tab-test --yes --cleanup-tag 2>$null
+          gh release create graphics-tab-test dist/CTR-NitroFueled-PC-graphics-tab-test-windows.zip `
+            --prerelease --target $env:GITHUB_SHA --title "Test build: MSAA setting (sky lines fix)" `
+            --notes "Test build: Graphics tab in the Options menu (opens the settings menu), plus MSAA off. Not an official release. No DLSS files."
