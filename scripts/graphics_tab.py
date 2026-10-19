@@ -35,7 +35,7 @@ ANCHOR = b'Comp__Menu_ButtonWithIcon005_behaviors_0'
 LABELS = {'en': 'Graphics', 'fr': 'Graphismes', 'mx': 'Gráficos', 'pt': 'Gráficos'}
 DUMP = ('octane_options_menu', 'octane_options_languageselect')
 SECTOR = 0x800
-VERSION = 2  # of this script's output (the cached file is rebuilt when it changes)
+VERSION = 3  # of this script's output (the cached file is rebuilt when it changes)
 
 
 def fnv1a(text):
@@ -77,7 +77,8 @@ class Archive:
         return (logical or full).replace('\\', '/')
 
     def read(self, i):
-        offset, _ordinal, size, block_index = self.infos[i]
+        offset, ordinal, size, block_index = self.infos[i]
+        offset |= (ordinal & 0xFF) << 32  # archives past 4 GiB: the offset's high byte
         if block_index == -1:
             self.f.seek(offset)
             return self.f.read(size)
@@ -183,7 +184,7 @@ def build(game, dest, dump):
     files = []
     for lang, (archive, i, name) in found.items():
         full, logical = archive.names[i]
-        files.append((full, logical, archive.infos[i][1], relabel(archive.read(i), LABELS[lang])))
+        files.append((full, logical, archive.infos[i][1] & ~0xFF, relabel(archive.read(i), LABELS[lang])))
         print(f'Graphics tab: {logical} from {name}')
     dest.parent.mkdir(parents=True, exist_ok=True)
     write_archive(dest, files, archives[0])
