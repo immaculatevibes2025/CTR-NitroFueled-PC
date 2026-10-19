@@ -46,11 +46,6 @@ constexpr u8 RegionQueryCode[5] = {0xe8, 0x42, 0x7f, 0xf5, 0xff};
 constexpr u64 Open2 = 0x1109200;
 constexpr u8 Open2Prologue[12] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57,
                                   0x41, 0x56, 0x41, 0x55, 0x41, 0x54};
-/// hidePlaceable_VSC's prologue (push rbp; mov rbp,rsp; push r15; push r14; push rbx;
-/// sub rsp,0x18).
-constexpr u64 Hide = 0x26f6b0;
-constexpr u8 HidePrologue[13] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41,
-                                 0x56, 0x53, 0x48, 0x83, 0xec, 0x18};
 /// The pin getter both use for their object input: (context, pin, out object), which returns
 /// the object with a reference taken; the release (0x150a790) drops it.
 constexpr u64 PinGetter = 0x4708a0;
