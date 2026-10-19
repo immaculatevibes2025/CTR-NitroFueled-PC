@@ -35,7 +35,7 @@ ANCHOR = b'Comp__Menu_ButtonWithIcon005_behaviors_0'
 LABELS = {'en': 'Graphics', 'fr': 'Graphismes', 'mx': 'Gráficos', 'pt': 'Gráficos'}
 DUMP = ('octane_options_menu', 'octane_options_languageselect')
 SECTOR = 0x800
-VERSION = 4  # of this script's output (the cached file is rebuilt when it changes)
+VERSION = 5  # of this script's output (the cached file is rebuilt when it changes)
 
 
 def fnv1a(text):
@@ -171,9 +171,32 @@ def rename(old, new):
     return patch
 
 
+def show_tab(data):
+    """ui/Octane_Options_Menu.igz (1.21 update): the fifth tab's placeable (the fifth child of the
+    Buttons placeable) has alpha 0, and stays 0 in the NoExtraButton and NoExtraAndTutorialsButtons
+    layouts; only the Switch layout (NXLayout) fades it in. Its alpha and those two keyframes
+    become 1. Offsets are in the file's data section, each checked first."""
+    data = bytearray(data)
+    if data[:4] != b'\x01ZGI':
+        raise ValueError('Octane_Options_Menu.igz: not an igz file')
+    base = struct.unpack_from('<I', data, 0x28)[0]
+    placeable, keyframes = 0x1370, (0x2a30, 0x2b98)
+    one = struct.pack('<f', 1.0)
+    if (data[base + placeable + 0xe0:base + placeable + 0xe4] != b'\0' * 4 or
+            data[base + 0x1250 + 0xe0:base + 0x1250 + 0xe4] != one):
+        raise ValueError('Octane_Options_Menu.igz: unexpected layout')
+    data[base + placeable + 0xe0:base + placeable + 0xe4] = one
+    for k in keyframes:
+        if struct.unpack_from('<q', data, base + k + 0x10)[0] != -1 or data[base + k + 0x18:base + k + 0x1c] != b'\0' * 4:
+            raise ValueError('Octane_Options_Menu.igz: unexpected keyframe')
+        data[base + k + 0x18:base + k + 0x1c] = one
+    return bytes(data)
+
+
 # Files changed in update3.pak: logical name -> change.
 CHANGES = {f'ui/octane_options_menu_{lang}.lng': (lambda label: lambda data: relabel(data, label))(label)
            for lang, label in LABELS.items()}
+CHANGES['ui/octane_options_menu.igz'] = show_tab
 # The Options menu's root script hides the fifth tab in this region by name: the name is changed
 # to one that matches nothing, so the hide does nothing.
 CHANGES['vsc/ui/octane_options_menu/octane_options_menu_root.igz'] = rename(
