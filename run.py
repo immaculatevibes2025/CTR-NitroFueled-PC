@@ -185,7 +185,13 @@ def main():
     say(f'Game profile: {env["BB_GAME_PROFILE"]}')
 
     original_game = game.resolve()
-    game = Path(run_python('scripts/mods.py', game, '--out', out,
+    # The Options menu's Graphics tab (scripts/graphics_tab.py): a relabelled menu archive.
+    replace = []
+    for line in run_python('scripts/graphics_tab.py', game, '--out', out, '--settings', config,
+                           capture=True).splitlines():
+        if '=' in line:
+            replace += ['--replace', line.strip()]
+    game = Path(run_python('scripts/mods.py', game, '--out', out, *replace,
                            '--mods-dir', env.get('BB_MODS_DIR', data / 'mods'),
                            '--config', env.get('BB_MODS_CONFIG', data / 'mods.json'),
                            '--enabled', env.get('BB_MODS_ENABLED', '1'), capture=True).strip())

@@ -69,6 +69,8 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.async_pipelines = i != 0;
     } else if (key == "msaa") {
         v.msaa = i != 0;
+    } else if (key == "graphics_tab") {
+        v.graphics_tab = i != 0;
     } else if (key == "fullscreen") {
         v.fullscreen = i != 0;
     } else if (key == "menu_pos") {
@@ -315,6 +317,7 @@ void Save() {
     put("fps_limit", std::to_string(v.fps_limit.load()));
     put("async_pipelines", flag(v.async_pipelines));
     put("msaa", flag(v.msaa));
+    put("graphics_tab", flag(v.graphics_tab));
     put("fullscreen", flag(v.fullscreen));
     put("fsr4_auto_exposure", flag(v.fsr4_auto_exposure));
     put("fsr4_invert_jitter", flag(v.fsr4_invert_jitter));

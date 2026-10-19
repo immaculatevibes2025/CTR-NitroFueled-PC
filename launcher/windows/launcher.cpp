@@ -1637,6 +1637,11 @@ void SettingsTab() {
                "The PS4's 2x anti-aliasing. Off by default: on PC it draws dotted lines in the sky and "
                "in light shafts. At high internal resolutions or with FSR/DLSS it is barely missed. "
                "Needs a restart."));
+    GameFlag("graphics_tab", T("Pestaña Gráficos en Opciones", "Graphics tab in the game's Options"), true,
+             T("Añade una pestaña Gráficos al menú Opciones del juego que abre este menú de ajustes. "
+               "Requiere reiniciar.",
+               "Adds a Graphics tab to the game's Options menu that opens this settings menu. "
+               "Needs a restart."));
     const std::string temporal = GameTemporal();
     const bool dlss_sized = temporal == "dlss" && a.game.Get("dlss_quality", "auto") != "auto";
     ImGui::BeginDisabled(dlss_sized);

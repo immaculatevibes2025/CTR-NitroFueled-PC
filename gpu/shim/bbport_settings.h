@@ -112,6 +112,9 @@ struct Values {
     /// resolutions this port offers MSAA adds little. Read once at start (restart to apply);
     /// BB_NO_MSAA=1/0 overrides it. AmdGpu::BbNoMsaa() is the switch the renderer reads.
     std::atomic<bool> msaa{false};
+    /// The game's Options menu gets a "Graphics" tab (the hidden Language Select tab, relabelled
+    /// by scripts/graphics_tab.py) that opens this settings menu. Read once at start.
+    std::atomic<bool> graphics_tab{true};
     /// SacredFire: exclusive fullscreen on the game's display (BB_DISPLAY). Applies at once;
     /// BB_FULLSCREEN=1 at start. Saved to bbport.ini by the menu.
     std::atomic<bool> fullscreen{false};
