@@ -4,10 +4,10 @@
 // screen. Its label comes from scripts/graphics_tab.py (relabelled menu text in update3.pak).
 //
 // Changes to the game's code (CTR NF 1.21, image offsets), visual-script nodes:
-//  - igGuiPlaceableNodes::hidePlaceable_VSC (0x26f6b0): the fifth tab
-//    (Comp__Menu_ButtonWithIcon005) is not hidden while an Options menu is the last menu opened.
-//  - CGuiNodes::open2_VSC (0x1109200), which opens a menu project: Octane_Options_LanguageSelect
-//    opens the settings menu instead. Every other project opens as before.
+//  - CGuiNodes::open2_VSC (0x1109200), which opens a menu project: the tab's script asks for a
+//    project that does not exist (scripts/graphics_tab.py renames it), which opens the settings
+//    menu instead. Every other project opens as before.
+// The tab is shown by the root script's own change (its hide names nothing, graphics_tab.py).
 // The first calls of each are logged with the object names found ("Graphics tab: ...").
 #include "bbport_graphics_tab.h"
 #include "bbport_settings.h"
@@ -170,7 +170,9 @@ u64 PS4_SYSV_ABI Open2Hook(void* context, void* args, void* a2, void* a3, void* 
     void* object = Input(context, args);
     Dump("open", args, object);
     const std::string name = Name(object, &where);
-    const bool ours = name == Project;
+    // The tab's script (relabelled by scripts/graphics_tab.py) names a project that does not
+    // exist: its input comes back empty. Every other menu opens with its project.
+    const bool ours = !object || name == Project;
     if (open_logged.fetch_add(1) < 40) {
         std::printf("Graphics tab: open %s (+0x%x)%s\n", name.empty() ? "(no name)" : name.c_str(),
                     where, ours ? " -> settings menu" : "");
@@ -185,30 +187,6 @@ u64 PS4_SYSV_ABI Open2Hook(void* context, void* args, void* a2, void* a3, void* 
         return 0;
     }
     return open2_original(context, args, a2, a3, a4, a5);
-}
-
-u64 PS4_SYSV_ABI HideHook(void* context, void* args, void* a2, void* a3, void* a4, void* a5) {
-    int where = -1;
-    void* object = Input(context, args);
-    Dump("hide", args, object);
-    const std::string name = Name(object, &where);
-    bool keep = false;
-    std::string menu;
-    if (name == Tab) {
-        std::scoped_lock lock{last_mutex};
-        menu = last_opened;
-        keep = menu.empty() || menu.find("Options") != std::string::npos;
-    }
-    if (hide_logged.fetch_add(1) < 60 || name == Tab) {
-        std::printf("Graphics tab: hide %s (+0x%x)%s%s\n", name.empty() ? "(no name)" : name.c_str(),
-                    where, name == Tab ? (" after " + menu).c_str() : "",
-                    keep ? " -> kept shown" : "");
-        std::fflush(stdout);
-    }
-    if (keep) {
-        return 0;
-    }
-    return hide_original(context, args, a2, a3, a4, a5);
 }
 
 void* AllocateCode(std::size_t size) {
@@ -246,8 +224,7 @@ void PatchImage(unsigned char* base, std::uint64_t size) {
     }
     if (Open2 + sizeof(Open2Prologue) > size ||
         std::memcmp(base + RegionQueryCall, RegionQueryCode, sizeof(RegionQueryCode)) ||
-        std::memcmp(base + Open2, Open2Prologue, sizeof(Open2Prologue)) ||
-        std::memcmp(base + Hide, HidePrologue, sizeof(HidePrologue))) {
+        std::memcmp(base + Open2, Open2Prologue, sizeof(Open2Prologue))) {
         std::printf("Graphics tab: unexpected game code, off\n");
         return;
     }
@@ -259,8 +236,6 @@ void PatchImage(unsigned char* base, std::uint64_t size) {
     image = base;
     open2_original = Detour(stubs, Open2, Open2Prologue, sizeof(Open2Prologue),
                             reinterpret_cast<const void*>(&Open2Hook));
-    hide_original = Detour(stubs + 64, Hide, HidePrologue, sizeof(HidePrologue),
-                           reinterpret_cast<const void*>(&HideHook));
 #ifdef _WIN32
     FlushInstructionCache(GetCurrentProcess(), stubs, 128);
 #endif
