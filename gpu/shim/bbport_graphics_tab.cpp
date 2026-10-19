@@ -357,7 +357,7 @@ std::string Row(std::size_t index, bool change) {
             v.dlss_quality = q;
         }
         static const char* names[] = {"Auto", "DLAA", "Quality", "Balanced", "Performance", "Ultra Perf."};
-        std::snprintf(text, sizeof(text), "DLSS quality: %s", names[q % 6]);
+        std::snprintf(text, sizeof(text), "Upscale Quality: %s", names[q % 6]);
         return text;
     }
     case 3:
@@ -367,7 +367,7 @@ std::string Row(std::size_t index, bool change) {
             patch = !patch.load();
         }
         // Row 4 is the game's motion blur: on unless the patch removes it.
-        std::snprintf(text, sizeof(text), index == 3 ? "60 FPS: %s" : "Motion blur: %s",
+        std::snprintf(text, sizeof(text), index == 3 ? "FPS Unlock: %s" : "Motion blur: %s",
                       OnOff(index == 3 ? patch.load() : !patch.load()));
         return text;
     }
@@ -388,18 +388,6 @@ std::string Row(std::size_t index, bool change) {
         }
         return text;
     }
-    case 6:
-        if (change) {
-            v.show_fps = !v.show_fps.load();
-        }
-        std::snprintf(text, sizeof(text), "FPS counter: %s", OnOff(v.show_fps));
-        return text;
-    case 7:
-        if (change) {
-            v.msaa = !v.msaa.load();
-        }
-        std::snprintf(text, sizeof(text), "MSAA: %s", OnOff(v.msaa));
-        return text;
     default:
         return "";
     }
