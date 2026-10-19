@@ -35,7 +35,7 @@ ANCHOR = b'Comp__Menu_ButtonWithIcon005_behaviors_0'
 LABELS = {'en': 'Graphics', 'fr': 'Graphismes', 'mx': 'Gráficos', 'pt': 'Gráficos'}
 DUMP = ('octane_options_menu', 'octane_options_languageselect')
 SECTOR = 0x800
-VERSION = 6  # of this script's output (the cached file is rebuilt when it changes)
+VERSION = 7  # of this script's output (the cached file is rebuilt when it changes)
 
 
 def fnv1a(text):
@@ -197,11 +197,6 @@ def show_tab(data):
 CHANGES = {f'ui/octane_options_menu_{lang}.lng': (lambda label: lambda data: relabel(data, label))(label)
            for lang, label in LABELS.items()}
 CHANGES['ui/octane_options_menu.igz'] = show_tab
-# Diagnostic marker (test builds): "Extras" reads "Extras+" in English when update3.pak's files
-# are the ones the game uses.
-_en = CHANGES['ui/octane_options_menu_en.lng']
-CHANGES['ui/octane_options_menu_en.lng'] = lambda data: _en(data).replace(
-    b'\0Extras\0\0Comp__Menu_ButtonWithIcon003', b'\0Extras+\0Comp__Menu_ButtonWithIcon003')
 # The Options menu's root script hides the fifth tab in this region by name: the name is changed
 # to one that matches nothing, so the hide does nothing.
 CHANGES['vsc/ui/octane_options_menu/octane_options_menu_root.igz'] = rename(
