@@ -329,9 +329,16 @@ const char* OnOff(bool on) {
 }
 
 /// Row `index`'s text; with `change`, its setting moves to the next value first.
-std::string Row(std::size_t index, bool change) {
+std::string Row(std::size_t row, bool change) {
     auto& v = BbSettings::Get();
     char text[96];
+    // The page's rows, top to bottom: Resolution, Ultrawide, Upscaling, Upscale Quality,
+    // FPS Unlock, Motion blur, FPS limit (the cases below; 6 is Ultrawide).
+    static constexpr std::size_t kSetting[] = {0, 6, 1, 2, 3, 4, 5};
+    if (row >= std::size(kSetting)) {
+        return "";
+    }
+    const std::size_t index = kSetting[row];
     switch (index) {
     case 0: {
         int r = v.render_res.load();
@@ -391,6 +398,17 @@ std::string Row(std::size_t index, bool change) {
         }
         return text;
     }
+    case 6: {
+        // bbport.ini aspect_ratio: 16:9 (off), 21:9 or 32:9; the ultrawide support does the rest.
+        int aspect = std::clamp(v.aspect_ratio.load(), 0, 2);
+        if (change) {
+            aspect = (aspect + 1) % 3;
+            v.aspect_ratio = aspect;
+        }
+        static const char* names[] = {"Off", "21:9", "32:9"};
+        std::snprintf(text, sizeof(text), "Ultrawide: %s", names[aspect]);
+        return text;
+    }
     default:
         return "";
     }
@@ -404,12 +422,12 @@ bool NeedsRestart() {
         restart |= v.game_patches[g] != v.startup_game_patches[g];
     }
     restart |= v.render_res != v.startup_render_res || v.temporal != v.startup_temporal ||
-               v.dlss_quality != v.startup_dlss_quality;
+               v.dlss_quality != v.startup_dlss_quality || v.aspect_ratio != v.startup_aspect_ratio;
     return restart;
 }
 
-constexpr std::size_t SettingRows = 6;  ///< rows 0..5: the settings
-constexpr std::size_t RestartRow = 6;   ///< "Restart to apply", shown while a change waits
+constexpr std::size_t SettingRows = 7;  ///< rows 0..6: the settings
+constexpr std::size_t RestartRow = 7;   ///< "Restart to apply", shown while a change waits
 
 /// A row's visibility: its placeable (CGuiBehaviorLanguageItem::_placeable, +0x30) and text
 /// placeable (+0x10), with hidePlaceable/showPlaceable's flags (+0xc: 0x1400 hidden, 0x1000 shown).
