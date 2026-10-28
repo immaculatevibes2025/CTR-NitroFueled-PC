@@ -324,6 +324,9 @@ bool IsA(void* event, u64 meta_global) {
 std::mutex rows_mutex;
 std::vector<u64> rows; ///< the language items, in the order the list filled them
 
+/// The 16:9 picture (output_res) to go back to when ultrawide is turned off.
+int wide_return = BbSettings::OutputDefault;
+
 const char* OnOff(bool on) {
     return on ? "On" : "Off";
 }
@@ -341,12 +344,36 @@ std::string Row(std::size_t row, bool change) {
     const std::size_t index = kSetting[row];
     switch (index) {
     case 0: {
-        int r = v.render_res.load();
+        // 16:9: the render size (render_res); then the ultrawide pictures (output_res 4..6,
+        // aspect 21:9 or 32:9), which pick the aspect too.
+        constexpr int Wide = BbSettings::OutputCount - 4; // 2560x1080, 3440x1440, 5120x1440
+        const int count = BbSettings::RenderResCount + Wide;
+        int k = v.aspect_ratio.load() != 0 && v.output_res.load() >= 4
+                    ? BbSettings::RenderResCount + v.output_res.load() - 4
+                    : (v.render_res.load() < 0 ? 2 : v.render_res.load());
         if (change) {
-            r = r < 0 ? 2 : (r + 1) % BbSettings::RenderResCount;
-            v.render_res = r;
+            k = (k + 1) % count;
+            if (k < BbSettings::RenderResCount) {
+                v.render_res = k;
+                if (v.aspect_ratio.load() != 0) {
+                    v.aspect_ratio = 0;
+                    v.output_res = wide_return; // the 16:9 picture from before ultrawide
+                }
+            } else {
+                if (v.output_res.load() < 4) {
+                    wide_return = v.output_res.load();
+                }
+                v.output_res = 4 + (k - BbSettings::RenderResCount);
+                v.aspect_ratio = v.output_res.load() == 6 ? 2 : 1;
+            }
         }
-        std::snprintf(text, sizeof(text), "Resolution: %dp", r < 0 ? 1080 : BbSettings::RenderResHeights[r]);
+        if (k < BbSettings::RenderResCount) {
+            std::snprintf(text, sizeof(text), "Resolution: %dp", BbSettings::RenderResHeights[k]);
+        } else {
+            const int o = 4 + (k - BbSettings::RenderResCount);
+            std::snprintf(text, sizeof(text), "Resolution: %dx%d", BbSettings::OutputWidths[o],
+                          BbSettings::OutputHeights[o]);
+        }
         return text;
     }
     case 1: {
@@ -405,6 +432,17 @@ std::string Row(std::size_t row, bool change) {
             aspect = (aspect + 1) % 3;
             v.aspect_ratio = aspect;
         }
+        if (change) {
+            // The picture follows: 3440x1440 for 21:9, 5120x1440 for 32:9, the 16:9 one back.
+            if (aspect == 0) {
+                v.output_res = wide_return;
+            } else {
+                if (v.output_res.load() < 4) {
+                    wide_return = v.output_res.load();
+                }
+                v.output_res = aspect == 2 ? 6 : 5;
+            }
+        }
         static const char* names[] = {"Off", "21:9", "32:9"};
         std::snprintf(text, sizeof(text), "Ultrawide: %s", names[aspect]);
         return text;
@@ -422,7 +460,8 @@ bool NeedsRestart() {
         restart |= v.game_patches[g] != v.startup_game_patches[g];
     }
     restart |= v.render_res != v.startup_render_res || v.temporal != v.startup_temporal ||
-               v.dlss_quality != v.startup_dlss_quality || v.aspect_ratio != v.startup_aspect_ratio;
+               v.dlss_quality != v.startup_dlss_quality || v.aspect_ratio != v.startup_aspect_ratio ||
+               v.output_res != v.startup_output_res;
     return restart;
 }
 
@@ -494,7 +533,15 @@ u64 PS4_SYSV_ABI LanguageItemHook(void* self, void* event, void* a2, void* a3, v
         }
         if (index != SIZE_MAX && type == 8) {
             const std::string text = Row(index, true);
-            SetText(*reinterpret_cast<u64*>(item + 0x10), text.c_str());
+            std::vector<u64> all;
+            {
+                std::scoped_lock lock{rows_mutex};
+                all = rows;
+            }
+            for (std::size_t r = 0; r < all.size() && r < SettingRows; ++r) {
+                const std::string t = r == index ? text : Row(r, false);
+                SetText(*reinterpret_cast<u64*>(all[r] + 0x10), t.c_str());
+            }
             BbSettings::Save();
             UpdateRestartRow();
             std::printf("Graphics tab: %s\n", text.c_str());

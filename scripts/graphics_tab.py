@@ -33,9 +33,10 @@ OUTPUT = 'archives/update3.pak'
 # The tab's label is the string before this placeable name in each text table.
 ANCHOR = b'Comp__Menu_ButtonWithIcon005_behaviors_0'
 LABELS = {'en': 'Graphics', 'fr': 'Graphismes', 'mx': 'Gráficos', 'pt': 'Gráficos'}
-DUMP = ('octane_options_menu', 'octane_options_languageselect')
+DUMP = ('octane_options_menu', 'octane_options_languageselect', 'octane_mainmenu', 'octane_main_menu',
+        'octane_startscreen_menu')
 SECTOR = 0x800
-VERSION = 7  # of this script's output (the cached file is rebuilt when it changes)
+VERSION = 8  # of this script's output (the cached file is rebuilt when it changes)
 
 
 def fnv1a(text):
