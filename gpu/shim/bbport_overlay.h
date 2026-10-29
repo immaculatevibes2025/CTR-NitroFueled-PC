@@ -39,6 +39,8 @@ bool TakePadRescan();
 
 /// Opens the settings menu (any thread): the game Options menu's Graphics tab.
 void OpenMenu();
+/// Ends the game as the window's close button does (any thread): the main menu's Quit Game.
+void QuitGame();
 
 /// The settings menu is open: the window shows the system cursor over it.
 bool MenuOpen();

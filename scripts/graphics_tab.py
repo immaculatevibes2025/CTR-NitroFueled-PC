@@ -36,7 +36,7 @@ LABELS = {'en': 'Graphics', 'fr': 'Graphismes', 'mx': 'Gráficos', 'pt': 'Gráfi
 DUMP = ('octane_options_menu', 'octane_options_languageselect', 'octane_mainmenu', 'octane_main_menu',
         'octane_startscreen_menu')
 SECTOR = 0x800
-VERSION = 8  # of this script's output (the cached file is rebuilt when it changes)
+VERSION = 9  # of this script's output (the cached file is rebuilt when it changes)
 
 
 def fnv1a(text):
@@ -208,6 +208,92 @@ CHANGES['vsc/ui/octane_options_menu/octane_options_menu_languageselectbutton.igz
     b'Octane_Options_LanguageSelect', b'Octane_Options_BbportSettings')
 
 
+# ---- The main menu's Quit Game button --------------------------------------------------------
+# The main menu (ui/Octane_MainMenu.igz, 1.21 update) has a seventh button, Wireless
+# (Comp__Menu_ButtonWithIcon), shown only in the Switch layout. It becomes Quit Game: relabelled,
+# shown with the Switch layout's positions, reachable from its neighbours, and its "open level"
+# names a map that does not exist, which the port's loadMap2_VSC hook takes as quitting.
+QUIT_KEY = b'Comp__Menu_ButtonWithIcon_behaviors_0\0'
+QUIT_LABELS = {'en': ('Quit Game', 'Close the game and return to the desktop.'),
+               'fr': ('Quitter', 'Fermer le jeu et revenir au bureau.'),
+               'mx': ('Salir', 'Cerrar el juego y volver al escritorio.'),
+               'pt': ('Sair', 'Fechar o jogo e voltar para a area de trabalho.')}
+QUIT_LEVEL = (b'Octane/Octane_OnlineLobby/Octane_OnlineLobby\0',
+              b'Octane/Octane_BbportQuit0/Octane_BbportQuit0\0')
+
+
+def same_length(old, new):
+    """`new` in `old`'s place: padded with spaces (the string table keeps its layout)."""
+    new = new.encode('utf-8')
+    if len(new) > len(old):
+        raise ValueError(f'{new!r} longer than {old!r}')
+    return new + b' ' * (len(old) - len(new))
+
+
+def quit_labels(label, hint):
+    def patch(data):
+        k = data.find(QUIT_KEY)
+        if k < 0 or data.count(QUIT_KEY) != 1:
+            raise ValueError('Wireless label not found')
+        # The hint before the key, the label after it.
+        h_end = k
+        while data[h_end - 1] == 0:
+            h_end -= 1
+        h_start = data.rfind(b'\0', 0, h_end) + 1
+        l_start = k + len(QUIT_KEY)
+        l_end = data.index(b'\0', l_start)
+        room = l_end  # the label, its terminator and the padding to the next string
+        while data[room] == 0:
+            room += 1
+        new = label.encode('utf-8')
+        # Spaces before the terminator keep the strings' 2-byte alignment exactly as it was.
+        size = room - l_start
+        if len(new) + 1 > size:
+            raise ValueError(f'{label!r} does not fit')
+        if len(new) <= l_end - l_start:
+            text = same_length(data[l_start:l_end], label) + data[l_end:room]
+        else:
+            text = new + b'\0' * (size - len(new))
+            if size - len(new) != 1 and (size - len(new)) % 2 == 0:
+                raise ValueError(f'{label!r}: no exact fit')
+        return (data[:h_start] + same_length(data[h_start:h_end], hint) + data[h_end:l_start] +
+                text + data[room:])
+    return patch
+
+
+def show_quit(data):
+    """ui/Octane_MainMenu.igz: the layouts swapped (the standard layout plays the Switch one's
+    animations: Wireless shown, the others moved), Wireless between its neighbours, its level
+    renamed. Offsets in the file's data section, each checked first."""
+    data = bytearray(data)
+    if data[:4] != b'\x01ZGI':
+        raise ValueError('Octane_MainMenu.igz: not an igz file')
+    base = struct.unpack_from('<I', data, 0x28)[0]
+    standard, switch = 0x2cf8, 0x2d10  # igGuiAnimationTag "StandardLayout", "SwitchLayout"
+    swaps = {0x5d10: standard, 0x8930: standard, 0x4b80: switch, 0x5198: switch, 0x5770: switch,
+             0x5de8: switch, 0x6488: switch, 0x6af0: switch, 0x8ba0: switch}
+    links = {0x53b8 + 0x118: 0x40b0, 0x5fb0 + 0x110: 0x42f0}  # down of 42f0, up of 40b0
+    for at, tag in swaps.items():
+        if struct.unpack_from('<Q', data, base + at + 0x10)[0] != tag:
+            raise ValueError('Octane_MainMenu.igz: unexpected layout')
+    for at, old in links.items():
+        if struct.unpack_from('<Q', data, base + at)[0] != old:
+            raise ValueError('Octane_MainMenu.igz: unexpected navigation')
+    for at, tag in swaps.items():
+        struct.pack_into('<Q', data, base + at + 0x10, switch if tag == standard else standard)
+    for at in links:
+        struct.pack_into('<Q', data, base + at, 0x41d0)  # the Wireless button
+    if data.count(QUIT_LEVEL[0]) != 1:
+        raise ValueError('Octane_MainMenu.igz: Wireless level not found')
+    return bytes(data.replace(QUIT_LEVEL[0], QUIT_LEVEL[1]))
+
+
+# Optional: built when found (an older game without the 1.21 menu keeps the rest).
+OPTIONAL = {f'ui/octane_mainmenu_{lang}.lng': quit_labels(*labels)
+            for lang, labels in QUIT_LABELS.items()}
+OPTIONAL['ui/octane_mainmenu.igz'] = show_quit
+
+
 def build(game, dest, dump):
     found = {}  # logical name (lower case) -> (archive, index, archive name)
     archives = []
@@ -224,16 +310,29 @@ def build(game, dest, dump):
                 target = dump / name / logical
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(archive.read(i))
-            if low in CHANGES and low not in found:
+            if (low in CHANGES or low in OPTIONAL) and low not in found:
                 found[low] = (archive, i, name)
-    if len(found) != len(CHANGES):
+    if not set(CHANGES) <= set(found):
         missing = ', '.join(sorted(set(CHANGES) - set(found)))
         raise ValueError(f'not found: {missing}')
     files = []
+    quit_files = []
     for low, (archive, i, name) in found.items():
         full, logical = archive.names[i]
-        files.append((full, logical, archive.infos[i][1] & ~0xFF, CHANGES[low](archive.read(i))))
-        print(f'Graphics tab: {logical} from {name}')
+        entry = (full, logical, archive.infos[i][1] & ~0xFF)
+        if low in CHANGES:
+            files.append(entry + (CHANGES[low](archive.read(i)),))
+            print(f'Graphics tab: {logical} from {name}')
+        else:
+            try:
+                quit_files.append(entry + (OPTIONAL[low](archive.read(i)),))
+            except ValueError as error:
+                print(f'Graphics tab: no Quit Game button ({error})')
+                quit_files = None
+                break
+    if quit_files and len(quit_files) == len(OPTIONAL):
+        files += quit_files
+        print('Graphics tab: Quit Game button in the main menu')
     dest.parent.mkdir(parents=True, exist_ok=True)
     write_archive(dest, files, archives[0])
 
