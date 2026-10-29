@@ -36,7 +36,7 @@ LABELS = {'en': 'Graphics', 'fr': 'Graphismes', 'mx': 'Gráficos', 'pt': 'Gráfi
 DUMP = ('octane_options_menu', 'octane_options_languageselect', 'octane_mainmenu', 'octane_main_menu',
         'octane_startscreen_menu')
 SECTOR = 0x800
-VERSION = 10  # of this script's output (the cached file is rebuilt when it changes)
+VERSION = 14  # of this script's output (the cached file is rebuilt when it changes)
 
 
 def fnv1a(text):
@@ -256,33 +256,44 @@ def quit_labels(label, hint):
             text = new + b'\0' * (size - len(new))
             if size - len(new) != 1 and (size - len(new)) % 2 == 0:
                 raise ValueError(f'{label!r}: no exact fit')
-        return (data[:h_start] + same_length(data[h_start:h_end], hint) + data[h_end:l_start] +
-                text + data[room:])
+        out = (data[:h_start] + same_length(data[h_start:h_end], hint) + data[h_end:l_start] +
+               text + data[room:])
+        # Test marker: "Pit Stop+" shows that this file reached the game.
+        return out.replace(b'\0Pit Stop\0\0', b'\0Pit Stop+\0') if label == 'Quit Game' else out
     return patch
 
 
 def show_quit(data):
-    """ui/Octane_MainMenu.igz: the layouts swapped (the standard layout plays the Switch one's
-    animations: Wireless shown, the others moved), Wireless between its neighbours, its level
-    renamed. Offsets in the file's data section, each checked first."""
+    """ui/Octane_MainMenu.igz: Wireless (shown only on the Switch) becomes visible, sits below
+    Wumpa Challenges and is the last item of the menu; its level is renamed. Offsets in the
+    file's data section, each checked first."""
     data = bytearray(data)
     if data[:4] != b'\x01ZGI':
         raise ValueError('Octane_MainMenu.igz: not an igz file')
     base = struct.unpack_from('<I', data, 0x28)[0]
-    standard, switch = 0x2cf8, 0x2d10  # igGuiAnimationTag "StandardLayout", "SwitchLayout"
-    swaps = {0x5d10: standard, 0x8930: standard, 0x4b80: switch, 0x5198: switch, 0x5770: switch,
-             0x5de8: switch, 0x6488: switch, 0x6af0: switch, 0x8ba0: switch}
-    links = {0x53b8 + 0x118: 0x40b0, 0x5fb0 + 0x110: 0x42f0}  # down of 42f0, up of 40b0
-    for at, tag in swaps.items():
-        if struct.unpack_from('<Q', data, base + at + 0x10)[0] != tag:
-            raise ValueError('Octane_MainMenu.igz: unexpected layout')
-    for at, old in links.items():
+    wireless, adventure, wumpa = 0x41d0, 0x4530, 0x3cf0  # placeables
+    # Navigation items (up +0x110, down +0x118): Wumpa Challenges -> Quit Game -> Adventure.
+    links = {0x7760 + 0x118: (adventure, wireless), 0x5988 + 0x110: (0x42f0, wumpa),
+             0x5988 + 0x118: (0x40b0, adventure), 0x47b0 + 0x110: (wumpa, wireless)}
+    for at, (old, _new) in links.items():
         if struct.unpack_from('<Q', data, base + at)[0] != old:
             raise ValueError('Octane_MainMenu.igz: unexpected navigation')
-    for at, tag in swaps.items():
-        struct.pack_into('<Q', data, base + at + 0x10, switch if tag == standard else standard)
-    for at in links:
-        struct.pack_into('<Q', data, base + at, 0x41d0)  # the Wireless button
+    for at, (_old, new) in links.items():
+        struct.pack_into('<Q', data, base + at, new)
+    # One row (105) below Wumpa Challenges (30, 262.5), on the menu's slant.
+    if struct.unpack_from('<2f', data, base + wireless + 0x60) != (12.0, 105.0):
+        raise ValueError('Octane_MainMenu.igz: unexpected Wireless position')
+    struct.pack_into('<2f', data, base + wireless + 0x60, 42.0, 367.5)
+    # Its alpha is 0 (only the Switch layout fades it in), as the Graphics tab's was: now 1.
+    if data[base + wireless + 0xe0:base + wireless + 0xe4] != b'\0' * 4:
+        raise ValueError('Octane_MainMenu.igz: unexpected Wireless alpha')
+    data[base + wireless + 0xe0:base + wireless + 0xe4] = struct.pack('<f', 1.0)
+    # Its standard-layout animation keeps it at alpha 0 (keyframe type 0xd, value 0): now 1.
+    key = 0x5dc8
+    if (struct.unpack_from('<qqq', data, base + key) != (0xd, 1, -1) or
+            data[base + key + 0x18:base + key + 0x1c] != b'\0' * 4):
+        raise ValueError('Octane_MainMenu.igz: unexpected Wireless keyframe')
+    data[base + key + 0x18:base + key + 0x1c] = struct.pack('<f', 1.0)
     if data.count(QUIT_LEVEL[0]) != 1:
         raise ValueError('Octane_MainMenu.igz: Wireless level not found')
     return bytes(data.replace(QUIT_LEVEL[0], QUIT_LEVEL[1]))
@@ -292,6 +303,10 @@ def show_quit(data):
 OPTIONAL = {f'ui/octane_mainmenu_{lang}.lng': quit_labels(*labels)
             for lang, labels in QUIT_LABELS.items()}
 OPTIONAL['ui/octane_mainmenu.igz'] = show_quit
+# The main menu's root script handles Wireless by name (hidden off the Switch): the name matches
+# nothing now, as with the Graphics tab.
+OPTIONAL['vsc/ui/octane_mainmenu/octane_mainmenu_root.igz'] = rename(
+    b'Comp__Menu_ButtonWithIcon', b'Comp__Menu_ButtonWithIcoX')
 
 
 def build(game, dest, dump):
