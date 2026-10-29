@@ -36,7 +36,7 @@ LABELS = {'en': 'Graphics', 'fr': 'Graphismes', 'mx': 'Gráficos', 'pt': 'Gráfi
 DUMP = ('octane_options_menu', 'octane_options_languageselect', 'octane_mainmenu', 'octane_main_menu',
         'octane_startscreen_menu')
 SECTOR = 0x800
-VERSION = 9  # of this script's output (the cached file is rebuilt when it changes)
+VERSION = 10  # of this script's output (the cached file is rebuilt when it changes)
 
 
 def fnv1a(text):
